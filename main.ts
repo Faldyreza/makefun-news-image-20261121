@@ -1,316 +1,256 @@
-// main.ts — "THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026"
-// make.fun news-image-20261121 entry. Node 22 stdlib only, no network.
-// Draws a 1024x1024 newspaper front page procedurally (2x supersampled
-// software rasteriser + hand-written PNG encoder) and writes
-// /output/entry.png + /output/dossier.json. Deterministic: same bytes
-// on every run (no clock, no randomness, no I/O besides the two outputs).
+// news-image-20261121 v2 — "THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026"
+// Fresh build. Node 22+ stdlib only, no network at run time, fully deterministic.
+// Writes /output/entry.png (1024x1024, <=1 MiB) + /output/dossier.json.
+// Output dir: $MAKEFUN_OUTPUT_DIR or /output. Never deletes /output.
 //
-// VERIFIED FACTS (live web research, 21 Nov 2026; sources in dossier.json):
-// - LEAD: COP31 climate talks in Antalya, Turkiye, missed their scheduled
-//   Friday finish and ran into overtime on Saturday 21 Nov 2026. The latest
-//   draft (published Thursday by co-host Australia) drops every mention of
-//   fossil fuels and drops the $120bn-a-year adaptation finance figure.
-//   Nearly 200 countries; a new draft was due Saturday morning. (AP, CNN,
-//   Reuters, BBC live, 21 Nov 2026)
-// - POLAND: two Russian missiles and a suspected jet-powered drone came down
-//   in Poland on Friday 20 Nov during the mass attack on Ukraine. A Kh-101
-//   cruise missile fell near Nowy Lipowiec; NATO chief Mark Rutte called it
-//   a "grave violation"; PM Donald Tusk called it a provocation. No one was
-//   hurt in Poland. (AP, Reuters, 20 Nov 2026)
-// - KYIV: Russia fired 84 cruise missiles and 404 drones at Ukraine in one
-//   overnight barrage; three Dnipro bridges in Kyiv were damaged, and parts
-//   of the capital lost power, heat and water. At least 8 killed.
-//   (Kyiv Independent, AP, BBC, 20 Nov 2026)
-// - MARKETS: US stocks fell Friday 20 Nov — S&P 500 down 3.7% into
-//   correction, Nasdaq down 5.3% and negative for the year, Nvidia down 14%,
-//   as the AI trade unwound. (AP/NPR, CNN, WSJ, Investopedia, 20 Nov 2026)
-// - IN BRIEF: Cyclone Akvan landfall near Gopalpur, Odisha — 370,000
-//   evacuated, no deaths reported (IMD); rights groups press for action
-//   after the ICJ found Myanmar guilty of Rohingya genocide (19 Nov ruling);
-//   France seeks a UN Security Council meeting over the Kyiv strikes
-//   (Reuters, 20 Nov); Estonia to shut its road border with Russia from
-//   1 December after an alleged arson attack (Reuters, 20 Nov); cricket —
-//   Jaiswal 85 and Rahul 52 not out, 130-run stand, India 159/1 replying to
-//   New Zealand's 368 in Wellington (Cricbuzz, 20 Nov).
+// FACTS (verified live by the v1 builder on 21 Nov 2026 from reputable sources;
+// reused unchanged here — no number or quote altered without fresh verification):
+//   LEAD — COP31 in Antalya, Turkiye, ran into overtime on Sat 21 Nov: the Friday
+//     deadline passed with no deal; the draft dropped every mention of fossil fuels
+//     and the $120bn/year adaptation figure; ~200 nations; new draft due Saturday.
+//     Sources: AP, CNN, Reuters, BBC.
+//   SEC 1 — Russian Kh-101 cruise missile came down in Poland near Nowy Lipowiec;
+//     NATO called it a "grave violation"; no one hurt. Sources: AP, Reuters, 20 Nov.
+//   SEC 2 — Kyiv barrage: 84 cruise missiles + 404 drones in one night; three
+//     Dnipro bridges damaged; power, heat and water cut. Sources: Kyiv Independent,
+//     AP, BBC.
+//   SEC 3 — AI sell-off in US stocks: S&P -3.7% into correction, Nasdaq -5.3%,
+//     Nvidia -14%. Sources: AP, CNN, WSJ.
+//   IN BRIEF — Cyclone Akvan: 370,000 evacuated in Odisha, no deaths reported (IMD);
+//     ICJ / Myanmar genocide ruling: action urged; France seeks UN Security Council
+//     meeting over the Kyiv strikes; Estonia to shut its border with Russia from
+//     1 Dec; cricket: Jaiswal 85, Rahul 52 not out, Wellington.
+//     (Footer keeps 4 briefs, spaced generously, so it stays legible at ~300 px;
+//     the cricket brief is dropped for room — breadth is kept across the other four.)
+//
+// v2 changes vs v1: (a) IN BRIEF gets a real gap after the label and generous
+// line spacing — 4 briefs, not 5 crammed; (b) the lead illustration is a full
+// COP31 conference-hall scene (arched windows, flag bunting, wall clock,
+// delegates at a round table, globe, crossed-out draft document) instead of
+// a bare globe + draft box + sun.
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { createHash } from "node:crypto";
-import { deflateSync } from "node:zlib";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as zlib from "node:zlib";
+import * as crypto from "node:crypto";
 
-// ---------------------------------------------------------------- canvas
+// ---------------------------------------------------------------- palette
 const W = 1024;
 const H = 1024;
-const SS = 2; // supersample factor (draw at 2048, downsample to 1024)
+const PAPER: RGB = [247, 243, 232]; // off-white paper
+const INK: RGB = [26, 24, 22]; // near-black ink
+const ACCENT: RGB = [179, 42, 30]; // lead accent: brick red
+const RULE = INK;
+const WALL: RGB = [227, 221, 210];
+const WOOD: RGB = [138, 90, 51];
+const WOOD_DARK: RGB = [110, 69, 37];
+const WOOD_LIGHT: RGB = [156, 107, 63];
+const BLUE: RGB = [46, 111, 176];
+const GREEN: RGB = [90, 168, 90];
+const SUN: RGB = [232, 122, 26];
+const NAVY: RGB = [22, 35, 58];
+const GREY_LINE: RGB = [120, 116, 108];
+const WHITE: RGB = [255, 255, 255];
+const SKIN: RGB = [217, 169, 134];
 
 type RGB = [number, number, number];
-type Pt = [number, number];
 
-const PAPER: RGB = [246, 241, 230];
-const INK: RGB = [25, 23, 19];
-const RED: RGB = [179, 38, 30];
-const SKY: RGB = [216, 231, 241];
-const OCEAN: RGB = [47, 109, 163];
-const LAND: RGB = [87, 167, 115];
-const SUN: RGB = [232, 134, 46];
-const WOOD: RGB = [107, 79, 53];
-const RIVER: RGB = [127, 168, 201];
-const GREY: RGB = [154, 149, 138];
-const LGREY: RGB = [201, 194, 178];
-const NIGHT: RGB = [34, 53, 77];
-const WHITE: RGB = [253, 252, 248];
-const GRID: RGB = [227, 221, 208];
-
-const buf = new Uint8Array(W * SS * H * SS * 3);
-const BW = W * SS;
-
-function setPx(x: number, y: number, c: RGB): void {
-  if (x < 0 || y < 0 || x >= BW || y >= H * SS) return;
-  const i = (y * BW + x) * 3;
-  buf[i] = c[0];
-  buf[i + 1] = c[1];
-  buf[i + 2] = c[2];
+// ---------------------------------------------------------------- canvas
+const px = new Uint8Array(W * H * 3);
+for (let i = 0; i < W * H; i++) {
+  px[i * 3] = PAPER[0];
+  px[i * 3 + 1] = PAPER[1];
+  px[i * 3 + 2] = PAPER[2];
 }
 
-// Filled disc, centre/radius in 2x pixels.
-function disc(cx: number, cy: number, r: number, c: RGB): void {
-  const r2 = r * r;
-  const y0 = Math.max(0, Math.ceil(cy - r));
-  const y1 = Math.min(H * SS - 1, Math.floor(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    const dy = y - cy;
-    const dx = Math.sqrt(Math.max(0, r2 - dy * dy));
-    const x0 = Math.max(0, Math.ceil(cx - dx));
-    const x1 = Math.min(BW - 1, Math.floor(cx + dx));
-    let i = (y * BW + x0) * 3;
-    for (let x = x0; x <= x1; x++) {
-      buf[i] = c[0];
-      buf[i + 1] = c[1];
-      buf[i + 2] = c[2];
-      i += 3;
-    }
-  }
+function setPix(x: number, y: number, c: RGB): void {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = (y * W + x) * 3;
+  px[i] = c[0];
+  px[i + 1] = c[1];
+  px[i + 2] = c[2];
 }
 
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  const x0 = Math.round(x * SS);
-  const y0 = Math.round(y * SS);
-  const x1 = Math.round((x + w) * SS);
-  const y1 = Math.round((y + h) * SS);
+function rect(x: number, y: number, w: number, h: number, c: RGB): void {
+  const x0 = Math.max(0, x);
+  const y0 = Math.max(0, y);
+  const x1 = Math.min(W, x + w);
+  const y1 = Math.min(H, y + h);
   for (let yy = y0; yy < y1; yy++) {
-    for (let xx = x0; xx < x1; xx++) setPx(xx, yy, c);
+    for (let xx = x0; xx < x1; xx++) setPix(xx, yy, c);
   }
 }
 
-// Thick line (1024-space coords, width in 1024 px) with round caps.
-function line(x1: number, y1: number, x2: number, y2: number, w: number, c: RGB): void {
-  const ax = x1 * SS;
-  const ay = y1 * SS;
-  const bx = x2 * SS;
-  const by = y2 * SS;
-  const r = Math.max(0.75, (w * SS) / 2);
-  const dx = bx - ax;
-  const dy = by - ay;
-  const len = Math.hypot(dx, dy);
-  const step = Math.max(1, r * 0.55);
-  const n = Math.max(1, Math.ceil(len / step));
-  for (let i = 0; i <= n; i++) {
-    const t = i / n;
-    disc(ax + dx * t, ay + dy * t, r, c);
-  }
+function hline(x: number, y: number, w: number, c: RGB, t = 1): void {
+  rect(x, y, w, t, c);
 }
 
-function polyline(pts: Pt[], w: number, c: RGB, close: boolean): void {
-  const n = pts.length;
-  for (let i = 0; i < n - 1; i++) {
-    line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], w, c);
-  }
-  if (close && n > 2) line(pts[n - 1][0], pts[n - 1][1], pts[0][0], pts[0][1], w, c);
+function vline(x: number, y: number, h: number, c: RGB, t = 1): void {
+  rect(x, y, t, h, c);
 }
 
-// Even-odd scanline polygon fill (1024-space coords).
-function poly(pts: Pt[], c: RGB): void {
-  const p = pts.map(([x, y]): Pt => [x * SS, y * SS]);
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const [, y] of p) {
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const y0 = Math.max(0, Math.floor(minY));
-  const y1 = Math.min(H * SS - 1, Math.ceil(maxY));
-  for (let y = y0; y <= y1; y++) {
-    const xs: number[] = [];
-    for (let i = 0; i < p.length; i++) {
-      const [x1, y1p] = p[i];
-      const [x2, y2p] = p[(i + 1) % p.length];
-      if ((y1p <= y && y2p > y) || (y2p <= y && y1p > y)) {
-        xs.push(x1 + ((y - y1p) / (y2p - y1p)) * (x2 - x1));
-      }
+// Bresenham line with square brush of size t.
+function line(x0: number, y0: number, x1: number, y1: number, c: RGB, t = 1): void {
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  let x = x0;
+  let y = y0;
+  const half = Math.floor(t / 2);
+  for (;;) {
+    rect(x - half, y - half, t, t, c);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
     }
-    xs.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < xs.length; k += 2) {
-      const xa = Math.max(0, Math.ceil(xs[k]));
-      const xb = Math.min(BW - 1, Math.floor(xs[k + 1]));
-      for (let x = xa; x <= xb; x++) setPx(x, y, c);
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
+    }
+  }
+}
+
+function circle(cx: number, cy: number, r: number, c: RGB): void {
+  for (let dy = -r; dy <= r; dy++) {
+    const hw = Math.floor(Math.sqrt(r * r - dy * dy));
+    rect(cx - hw, cy + dy, hw * 2 + 1, 1, c);
+  }
+}
+
+function ring(cx: number, cy: number, r: number, c: RGB, t = 2): void {
+  for (let a = 0; a < 360; a += 1) {
+    const rad = (a * Math.PI) / 180;
+    for (let k = 0; k < t; k++) {
+      setPix(Math.round(cx + (r - k) * Math.cos(rad)), Math.round(cy + (r - k) * Math.sin(rad)), c);
     }
   }
 }
 
 function ellipse(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
-  const cx2 = cx * SS;
-  const cy2 = cy * SS;
-  const rx2 = rx * SS;
-  const ry2 = ry * SS;
-  const y0 = Math.max(0, Math.ceil(cy2 - ry2));
-  const y1 = Math.min(H * SS - 1, Math.floor(cy2 + ry2));
-  for (let y = y0; y <= y1; y++) {
-    const dy = (y - cy2) / ry2;
-    const dx = rx2 * Math.sqrt(Math.max(0, 1 - dy * dy));
-    const x0 = Math.max(0, Math.ceil(cx2 - dx));
-    const x1 = Math.min(BW - 1, Math.floor(cx2 + dx));
-    for (let x = x0; x <= x1; x++) setPx(x, y, c);
+  for (let dy = -ry; dy <= ry; dy++) {
+    const f = 1 - (dy * dy) / (ry * ry);
+    const hw = Math.floor(rx * Math.sqrt(Math.max(0, f)));
+    rect(cx - hw, cy + dy, hw * 2 + 1, 1, c);
   }
 }
 
-function ring(cx: number, cy: number, r: number, w: number, c: RGB): void {
-  const pts: Pt[] = [];
-  for (let i = 0; i < 40; i++) {
-    const a = (i / 40) * Math.PI * 2;
-    pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+// Scanline fill for a simple polygon (convex or concave, non self-intersecting).
+function poly(points: Array<[number, number]>, c: RGB): void {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [, y] of points) {
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
   }
-  polyline(pts, w, c, true);
+  for (let y = Math.ceil(minY); y <= Math.floor(maxY); y++) {
+    const xs: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[(i + 1) % points.length];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+        xs.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      rect(Math.ceil(xs[k]), y, Math.floor(xs[k + 1]) - Math.ceil(xs[k]) + 1, 1, c);
+    }
+  }
 }
 
-// Four-point burst star (impact marker).
-function star4(cx: number, cy: number, r: number, c: RGB): void {
-  const pts: Pt[] = [];
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
-    const rr = i % 2 === 0 ? r : r * 0.32;
-    pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]);
-  }
-  poly(pts, c);
-}
-
-// ---------------------------------------------------------------- font
-// Hand-authored stroke font: each glyph is polylines on a 6-wide, 10-tall
-// grid (y=0 top, y=10 baseline; descenders may reach y=12). All image text
-// is uppercase, so only capitals, digits and the punctuation used below.
-const GLYPHS: Record<string, Pt[][]> = {
-  A: [[[0, 10], [3, 0], [6, 10]], [[1.7, 6.6], [4.3, 6.6]]],
-  B: [[[0, 10], [0, 0], [4, 0], [5.4, 1.4], [5.4, 3.6], [4, 5], [0, 5]], [[4, 5], [5.4, 6.4], [5.4, 8.6], [4, 10], [0, 10]]],
-  C: [[[5.4, 1.6], [4, 0], [2, 0], [0.6, 1.4], [0.6, 8.6], [2, 10], [4, 10], [5.4, 8.4]]],
-  D: [[[0, 10], [0, 0], [3.6, 0], [5.4, 1.8], [5.4, 8.2], [3.6, 10], [0, 10]]],
-  E: [[[5.4, 0], [0, 0], [0, 10], [5.4, 10]], [[0, 5], [4, 5]]],
-  F: [[[0, 10], [0, 0], [5.4, 0]], [[0, 5], [4, 5]]],
-  G: [[[5.4, 1.6], [4, 0], [2, 0], [0.6, 1.4], [0.6, 8.6], [2, 10], [4, 10], [5.4, 8.4], [5.4, 5.4], [3.2, 5.4]]],
-  H: [[[0, 0], [0, 10]], [[6, 0], [6, 10]], [[0, 5], [6, 5]]],
-  I: [[[3, 0], [3, 10]], [[1.4, 0], [4.6, 0]], [[1.4, 10], [4.6, 10]]],
-  J: [[[5.4, 0], [5.4, 8.4], [4, 10], [2, 10], [0.6, 8.4]]],
-  K: [[[0, 0], [0, 10]], [[5.4, 0], [0.6, 5], [5.4, 10]]],
-  L: [[[0, 0], [0, 10], [5.4, 10]]],
-  M: [[[0, 10], [0, 0], [3, 4.6], [6, 0], [6, 10]]],
-  N: [[[0, 10], [0, 0], [6, 10], [6, 0]]],
-  O: [[[1.6, 0], [4.4, 0], [5.8, 1.4], [5.8, 8.6], [4.4, 10], [1.6, 10], [0.2, 8.6], [0.2, 1.4], [1.6, 0]]],
-  P: [[[0, 10], [0, 0], [4, 0], [5.4, 1.4], [5.4, 3.6], [4, 5], [0, 5]]],
-  Q: [[[1.6, 0], [4.4, 0], [5.8, 1.4], [5.8, 8.6], [4.4, 10], [1.6, 10], [0.2, 8.6], [0.2, 1.4], [1.6, 0]], [[3.8, 7], [6.2, 10.6]]],
-  R: [[[0, 10], [0, 0], [4, 0], [5.4, 1.4], [5.4, 3.6], [4, 5], [0, 5]], [[3.6, 5], [6, 10]]],
-  S: [[[5.4, 1.6], [4, 0], [2, 0], [0.6, 1.4], [0.6, 3.4], [2, 4.8], [4, 4.8], [5.4, 6.2], [5.4, 8.6], [4, 10], [2, 10], [0.6, 8.4]]],
-  T: [[[0, 0], [6, 0]], [[3, 0], [3, 10]]],
-  U: [[[0, 0], [0, 8.6], [1.6, 10], [4.4, 10], [6, 8.6], [6, 0]]],
-  V: [[[0, 0], [3, 10], [6, 0]]],
-  W: [[[0, 0], [1.5, 10], [3, 4.2], [4.5, 10], [6, 0]]],
-  X: [[[0, 0], [6, 10]], [[6, 0], [0, 10]]],
-  Y: [[[0, 0], [3, 4.6], [6, 0]], [[3, 4.6], [3, 10]]],
-  Z: [[[0, 0], [6, 0], [0, 10], [6, 10]]],
-  "0": [[[1.6, 0], [4.4, 0], [5.8, 1.4], [5.8, 8.6], [4.4, 10], [1.6, 10], [0.2, 8.6], [0.2, 1.4], [1.6, 0]], [[1.6, 8.4], [4.4, 1.6]]],
-  "1": [[[1.6, 2.2], [3, 0], [3, 10]], [[1.4, 10], [4.6, 10]]],
-  "2": [[[0.6, 2.2], [1.6, 0.6], [4.4, 0.6], [5.4, 2], [5.4, 3.6], [0.4, 10], [5.6, 10]]],
-  "3": [[[0.6, 1.6], [2, 0], [4, 0], [5.4, 1.4], [5.4, 3.6], [4, 5], [2, 5]], [[4, 5], [5.4, 6.4], [5.4, 8.6], [4, 10], [2, 10], [0.6, 8.4]]],
-  "4": [[[4.6, 0], [0.2, 7.4], [5.6, 7.4]], [[4.6, 0], [4.6, 10]]],
-  "5": [[[5.4, 0], [0.6, 0], [0.6, 4.4], [4, 4.4], [5.4, 5.8], [5.4, 8.6], [4, 10], [1.6, 10], [0.6, 8.4]]],
-  "6": [[[5.4, 1.6], [4, 0], [2, 0], [0.6, 1.8], [0.2, 5], [0.2, 8.6], [1.6, 10], [4, 10], [5.4, 8.6], [5.4, 6.4], [4, 5], [1.6, 5]]],
-  "7": [[[0, 0], [6, 0], [3, 10]]],
-  "8": [[[1.6, 0], [4.4, 0], [5.6, 1.4], [5.6, 3.4], [4.4, 5], [1.6, 5], [0.4, 3.4], [0.4, 1.4], [1.6, 0]], [[1.6, 5], [4.4, 5], [5.6, 6.6], [5.6, 8.6], [4.4, 10], [1.6, 10], [0.4, 8.6], [0.4, 6.6], [1.6, 5]]],
-  "9": [[[0.6, 8.4], [2, 10], [4, 10], [5.4, 8.2], [5.8, 5], [5.8, 1.4], [4.4, 0], [1.6, 0], [0.4, 1.4], [0.4, 3.6], [1.6, 5], [4.4, 5]]],
-  ".": [[[2.8, 9.4], [3.2, 9.4]]],
-  ",": [[[2.8, 9.4], [3.2, 9.4]], [[3, 9.6], [2, 11.8]]],
-  ":": [[[2.8, 3.4], [3.2, 3.4]], [[2.8, 9.4], [3.2, 9.4]]],
-  ";": [[[2.8, 3.4], [3.2, 3.4]], [[3, 9.2], [2.2, 11.6]]],
-  "'": [[[3.6, 0], [2.6, 3]]],
-  "-": [[[0.6, 5], [5.4, 5]]],
-  "—": [[[0, 5], [6, 5]]],
-  "·": [[[2.8, 4.8], [3.2, 4.8]]],
-  "(": [[[4.6, 0], [2.4, 2], [2.4, 8], [4.6, 10]]],
-  ")": [[[1.4, 0], [3.6, 2], [3.6, 8], [1.4, 10]]],
-  "/": [[[1.4, 10], [4.6, 0]]],
-  "%": [[[1, 1], [2, 1], [2.6, 1.6], [2.6, 2.6], [2, 3.2], [1, 3.2], [0.4, 2.6], [0.4, 1.6], [1, 1]], [[4, 6.8], [5, 6.8], [5.6, 7.4], [5.6, 8.4], [5, 9], [4, 9], [3.4, 8.4], [3.4, 7.4], [4, 6.8]], [[5.4, 0.6], [0.6, 9.4]]],
-  "!": [[[3, 0], [3, 6.8]], [[2.8, 9.2], [3.2, 9.2]]],
-  "?": [[[1.4, 2.6], [1.8, 0.8], [4.2, 0.8], [5, 2.4], [5, 3.2], [3, 5.6], [3, 7]], [[2.8, 9.2], [3.2, 9.2]]],
+// ---------------------------------------------------------------- 5x7 font
+// Each glyph: 7 rows, 5 bits (bit 4 = leftmost column). Uppercase + digits +
+// punctuation only — every string in the image is set in capitals.
+const FONT: Record<string, number[]> = {
+  A: [14, 17, 17, 31, 17, 17, 17],
+  B: [30, 17, 17, 30, 17, 17, 30],
+  C: [14, 17, 16, 16, 16, 17, 14],
+  D: [30, 17, 17, 17, 17, 17, 30],
+  E: [31, 16, 16, 30, 16, 16, 31],
+  F: [31, 16, 16, 30, 16, 16, 16],
+  G: [14, 17, 16, 23, 17, 17, 15],
+  H: [17, 17, 17, 31, 17, 17, 17],
+  I: [14, 4, 4, 4, 4, 4, 14],
+  J: [7, 2, 2, 2, 2, 18, 12],
+  K: [17, 18, 20, 24, 20, 18, 17],
+  L: [16, 16, 16, 16, 16, 16, 31],
+  M: [17, 27, 21, 21, 17, 17, 17],
+  N: [17, 25, 21, 19, 17, 17, 17],
+  O: [14, 17, 17, 17, 17, 17, 14],
+  P: [30, 17, 17, 30, 16, 16, 16],
+  Q: [14, 17, 17, 17, 21, 18, 13],
+  R: [30, 17, 17, 30, 20, 18, 17],
+  S: [15, 16, 16, 14, 1, 1, 30],
+  T: [31, 4, 4, 4, 4, 4, 4],
+  U: [17, 17, 17, 17, 17, 17, 14],
+  V: [17, 17, 17, 17, 17, 10, 4],
+  W: [17, 17, 17, 21, 21, 27, 17],
+  X: [17, 17, 10, 4, 10, 17, 17],
+  Y: [17, 17, 10, 4, 4, 4, 4],
+  Z: [31, 1, 2, 4, 8, 16, 31],
+  "0": [14, 17, 19, 21, 25, 17, 14],
+  "1": [4, 12, 4, 4, 4, 4, 14],
+  "2": [14, 17, 1, 6, 8, 16, 31],
+  "3": [31, 2, 4, 2, 1, 17, 14],
+  "4": [2, 6, 10, 18, 31, 2, 2],
+  "5": [31, 16, 30, 1, 1, 17, 14],
+  "6": [6, 8, 16, 30, 17, 17, 14],
+  "7": [31, 1, 2, 4, 8, 8, 8],
+  "8": [14, 17, 17, 14, 17, 17, 14],
+  "9": [14, 17, 17, 15, 1, 2, 12],
+  " ": [0, 0, 0, 0, 0, 0, 0],
+  ".": [0, 0, 0, 0, 0, 12, 12],
+  ",": [0, 0, 0, 0, 12, 4, 8],
+  "-": [0, 0, 0, 14, 0, 0, 0],
+  "'": [4, 4, 8, 0, 0, 0, 0],
+  "%": [25, 26, 2, 4, 8, 11, 19],
+  ":": [0, 12, 12, 0, 12, 12, 0],
+  ";": [0, 12, 12, 0, 12, 4, 8],
+  "(": [2, 4, 8, 8, 8, 4, 2],
+  ")": [8, 4, 2, 2, 2, 4, 8],
+  "/": [1, 2, 2, 4, 8, 8, 16],
+  "&": [12, 18, 20, 8, 21, 18, 13],
+  "+": [0, 4, 4, 31, 4, 4, 0],
+  "=": [0, 0, 31, 0, 31, 0, 0],
+  "!": [4, 4, 4, 4, 4, 0, 4],
+  "?": [14, 17, 1, 6, 4, 0, 4],
+  '"': [10, 10, 0, 0, 0, 0, 0],
+  "*": [0, 21, 14, 31, 14, 21, 0],
+  $: [4, 15, 20, 14, 5, 30, 4],
+  "#": [10, 10, 31, 10, 31, 10, 10],
 };
 
-const ADV = 0.68; // advance per glyph, as a fraction of cap-height size
+const GLYPH_ADV = 6; // 5 columns + 1 spacing, in font units
 
-function textW(s: string, size: number, track: number): number {
-  if (s.length === 0) return 0;
-  return s.length * (ADV * size + track) - track;
+function textWidth(s: string, sc: number): number {
+  return s.length * GLYPH_ADV * sc - sc; // no trailing spacing on last glyph
 }
 
-function drawGlyph(ch: string, x: number, y: number, size: number, c: RGB): void {
-  const g = GLYPHS[ch];
-  if (!g) return;
-  const u = size / 10;
-  const w = Math.max(2.5, size * 0.17);
-  for (const stroke of g) {
-    const pts: Pt[] = stroke.map(([gx, gy]): Pt => [x + gx * u, y + gy * u]);
-    if (pts.length === 1) {
-      disc(pts[0][0] * SS, pts[0][1] * SS, (w * SS) / 2, c);
-    } else {
-      polyline(pts, w, c, false);
-    }
-  }
-}
-
-function drawText(
-  s: string,
-  x: number,
-  y: number,
-  size: number,
-  c: RGB,
-  align: "left" | "center" | "right",
-  track: number,
-): void {
-  const w = textW(s, size, track);
-  let sx = x;
-  if (align === "center") sx = x - w / 2;
-  if (align === "right") sx = x - w;
-  let cx = sx;
+function drawText(x: number, y: number, s: string, sc: number, c: RGB): void {
+  let cx = x;
   for (const ch of s) {
-    if (ch !== " ") drawGlyph(ch, cx, y, size, c);
-    cx += ADV * size + track;
-  }
-}
-
-// Greedy word wrap; returns lines that fit maxW at size.
-function wrap(s: string, maxW: number, size: number): string[] {
-  const words = s.split(" ");
-  const lines: string[] = [];
-  let cur = "";
-  for (const word of words) {
-    const trial = cur === "" ? word : cur + " " + word;
-    if (textW(trial, size, 0) <= maxW || cur === "") {
-      cur = trial;
-    } else {
-      lines.push(cur);
-      cur = word;
+    const g = FONT[ch] ?? FONT[" "];
+    for (let row = 0; row < 7; row++) {
+      const bits = g[row];
+      for (let col = 0; col < 5; col++) {
+        if (bits & (16 >> col)) {
+          rect(cx + col * sc, y + row * sc, sc, sc, c);
+        }
+      }
     }
+    cx += GLYPH_ADV * sc;
   }
-  if (cur !== "") lines.push(cur);
-  return lines;
 }
 
-// ---------------------------------------------------------------- png
+function drawTextCenter(cx: number, y: number, s: string, sc: number, c: RGB): void {
+  drawText(cx - Math.floor(textWidth(s, sc) / 2), y, s, sc, c);
+}
+
+// ---------------------------------------------------------------- PNG encode
 const CRC_TABLE: number[] = (() => {
   const t: number[] = [];
   for (let n = 0; n < 256; n++) {
@@ -321,301 +261,533 @@ const CRC_TABLE: number[] = (() => {
   return t;
 })();
 
-function crc32(b: Buffer): number {
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
 function pngChunk(type: string, data: Buffer): Buffer {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, "ascii");
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
-  return out;
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td), 0);
+  return Buffer.concat([len, td, crc]);
 }
 
-function encodePNG(w: number, h: number, rgb: Uint8Array): Buffer {
-  const raw = Buffer.alloc(h * (1 + w * 3));
-  for (let y = 0; y < h; y++) {
-    raw[y * (1 + w * 3)] = 0;
-    raw.set(rgb.subarray(y * w * 3, (y + 1) * w * 3), y * (1 + w * 3) + 1);
-  }
+function encodePNG(): Buffer {
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
+  ihdr.writeUInt32BE(W, 0);
+  ihdr.writeUInt32BE(H, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // colour type 2 = RGB
-  ihdr[10] = 0;
-  ihdr[11] = 0;
-  ihdr[12] = 0;
+  ihdr[9] = 2; // RGB
+  ihdr[10] = 0; // compression
+  ihdr[11] = 0; // filter
+  ihdr[12] = 0; // interlace
+  const raw = Buffer.alloc(H * (1 + W * 3));
+  for (let y = 0; y < H; y++) {
+    raw[y * (1 + W * 3)] = 0; // filter: none
+    raw.set(px.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
+  }
+  const idat = zlib.deflateSync(raw, { level: 9 });
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    sig,
     pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", deflateSync(raw, { level: 9 })),
+    pngChunk("IDAT", idat),
     pngChunk("IEND", Buffer.alloc(0)),
   ]);
 }
 
-function downsample(): Uint8Array {
-  const out = new Uint8Array(W * H * 3);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      for (let ch = 0; ch < 3; ch++) {
-        let s = 0;
-        for (let dy = 0; dy < SS; dy++) {
-          for (let dx = 0; dx < SS; dx++) {
-            s += buf[((y * SS + dy) * BW + (x * SS + dx)) * 3 + ch];
-          }
-        }
-        out[(y * W + x) * 3 + ch] = Math.round(s / (SS * SS));
-      }
-    }
-  }
-  return out;
-}
+// ---------------------------------------------------------------- layout
+const MX = 28; // content left
+const CW = W - 2 * MX; // 968 content width
+const FRAME = 12;
 
-// ---------------------------------------------------------------- scenes
-function drawLeadArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, SKY);
-  // Sun, top right.
-  const sx = x + w - 69;
-  const sy = y + 55;
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    line(
-      sx + Math.cos(a) * 30, sy + Math.sin(a) * 30,
-      sx + Math.cos(a) * 42, sy + Math.sin(a) * 42,
-      4, SUN,
+// ---------------------------------------------------------------- lead scene
+// COP31 conference hall. Scene box: (sx, sy) size sw x sh.
+function drawLeadScene(sx: number, sy: number, sw: number, sh: number): void {
+  const frame: RGB = [90, 84, 74];
+  // Back wall
+  rect(sx, sy, sw, sh, WALL);
+  // Floor band at the bottom
+  rect(sx, sy + sh - 14, sw, 14, [74, 58, 44]);
+
+  // --- flag bunting across the top (small pennants on a string)
+  const flagCols: RGB[] = [
+    [179, 42, 30],
+    [46, 111, 176],
+    [90, 168, 90],
+    [232, 178, 26],
+    [120, 70, 140],
+    [30, 120, 110],
+    [200, 90, 40],
+    [60, 60, 120],
+  ];
+  line(sx + 8, sy + 6, sx + sw - 8, sy + 6, INK, 2);
+  const nFlags = 16;
+  for (let i = 0; i < nFlags; i++) {
+    const fx = sx + 14 + i * ((sw - 28) / nFlags);
+    const fw = 26;
+    const fh = 16;
+    const c = flagCols[i % flagCols.length];
+    poly(
+      [
+        [Math.round(fx), sy + 7],
+        [Math.round(fx + fw), sy + 7],
+        [Math.round(fx + fw / 2), sy + 7 + fh],
+      ],
+      c,
     );
   }
-  disc(sx * SS, sy * SS, 26 * SS, SUN);
-  // Globe, left.
-  const gx = x + 185;
-  const gy = y + 88;
-  const gr = 72;
-  disc(gx * SS, gy * SS, gr * SS, OCEAN);
-  poly(
-    [[x + 140, y + 60], [x + 170, y + 40], [x + 205, y + 45], [x + 215, y + 70], [x + 195, y + 95], [x + 160, y + 95], [x + 138, y + 80]],
-    LAND,
-  );
-  poly(
-    [[x + 225, y + 108], [x + 248, y + 106], [x + 248, y + 118], [x + 235, y + 130], [x + 220, y + 128], [x + 218, y + 115]],
-    LAND,
-  );
-  // Meridian + equator hints.
-  line(gx, gy - gr, gx, gy + gr, 2, [127, 176, 212]);
-  line(gx - gr, gy, gx + gr, gy, 2, [127, 176, 212]);
-  ring(gx, gy, gr, 3, INK);
-  // Conference table along the bottom.
-  fillRect(x, y + h - 30, w, 30, WOOD);
-  fillRect(x, y + h - 30, w, 3, [90, 66, 44]);
-  // Microphones on the table.
-  for (const mx of [x + 350, x + 440, x + 530]) {
-    line(mx, y + h - 30, mx, y + h - 48, 3, INK);
-    disc(mx * SS, (y + h - 52) * SS, 5 * SS, INK);
+
+  // --- three arched windows on the back wall, dusk sky inside
+  const winY = sy + 30;
+  const winH = 76;
+  const winW = 200;
+  const winXs = [sx + 40, sx + sw / 2 - winW / 2, sx + sw - 40 - winW];
+  for (let i = 0; i < 3; i++) {
+    const wx = winXs[i];
+    // glass
+    rect(wx, winY + 14, winW, winH - 14, [184, 208, 221]);
+    ellipse(wx + winW / 2, winY + 14, winW / 2, 14, [184, 208, 221]);
+    // frame: outline + mullions
+    rect(wx - 3, winY + 14, 3, winH - 14, frame);
+    rect(wx + winW, winY + 14, 3, winH - 14, frame);
+    rect(wx - 3, winY + winH - 3, winW + 6, 3, frame);
+    vline(wx + winW / 2 - 1, winY + 14, winH - 14, frame, 3);
+    hline(wx, winY + winH / 2, winW, frame, 3);
+    // arch outline (approximated by short segments)
+    for (let a = 180; a <= 360; a += 6) {
+      const rad = (a * Math.PI) / 180;
+      const pxp = Math.round(wx + winW / 2 + (winW / 2) * Math.cos(rad));
+      const pyp = Math.round(winY + 14 + 14 * Math.sin(rad));
+      rect(pxp - 1, pyp - 1, 3, 3, frame);
+    }
   }
-  // Draft document, right: the fossil-fuel clause struck out.
-  const dx = x + 570;
-  const dy = y + 32;
-  fillRect(dx, dy, 300, 96, WHITE);
-  polyline(
-    [[dx, dy], [dx + 300, dy], [dx + 300, dy + 96], [dx, dy + 96]],
-    2, INK, true,
-  );
-  drawText("DRAFT", dx + 16, dy + 10, 20, INK, "left", 2);
-  fillRect(dx + 16, dy + 36, 200, 5, LGREY);
-  fillRect(dx + 16, dy + 47, 258, 5, LGREY);
-  fillRect(dx + 16, dy + 58, 180, 5, LGREY);
-  drawText("FOSSIL FUELS", dx + 16, dy + 68, 22, RED, "left", 1);
-  line(dx + 12, dy + 80, dx + 196, dy + 80, 3, RED);
-  // Panel border.
-  polyline(
-    [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
-    2, INK, true,
-  );
-}
+  // Sun low in the middle window + small clouds
+  const sunCx = winXs[1] + winW / 2;
+  const sunCy = winY + winH - 22;
+  circle(sunCx, sunCy, 16, SUN);
+  for (let a = 0; a < 8; a++) {
+    const rad = (a * Math.PI) / 4;
+    line(
+      Math.round(sunCx + 20 * Math.cos(rad)),
+      Math.round(sunCy + 20 * Math.sin(rad)),
+      Math.round(sunCx + 27 * Math.cos(rad)),
+      Math.round(sunCy + 27 * Math.sin(rad)),
+      SUN,
+      2,
+    );
+  }
+  ellipse(winXs[0] + 60, winY + 34, 26, 7, WHITE);
+  ellipse(winXs[0] + 84, winY + 30, 20, 6, WHITE);
+  ellipse(winXs[2] + 130, winY + 40, 24, 7, WHITE);
 
-function drawPolandArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, NIGHT);
-  fillRect(x, y + h - 18, w, 18, [58, 63, 69]);
-  // Missile arc with flame.
-  polyline([[x + 8, y + 52], [x + 75, y + 30], [x + 135, y + 14]], 3, WHITE, false);
-  disc((x + 8) * SS, (y + 52) * SS, 4 * SS, SUN);
-  disc((x + 135) * SS, (y + 14) * SS, 3 * SS, WHITE);
-  // Three impact bursts on the ground.
-  star4(x + 45, y + 58, 7, RED);
-  star4(x + 85, y + 60, 7, RED);
-  star4(x + 125, y + 56, 7, RED);
-  polyline([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 1, LGREY, true);
-}
+  // --- wall clock (overtime: hands near midnight) between windows 2 and 3
+  const ckx = sx + sw - 40 - winW - 58;
+  const cky = winY + 26;
+  circle(ckx, cky, 22, WHITE);
+  ring(ckx, cky, 22, INK, 3);
+  circle(ckx, cky, 2, INK);
+  line(ckx, cky, ckx - 1, cky - 15, INK, 3); // minute hand, near 12
+  line(ckx, cky, ckx + 8, cky - 11, INK, 3); // hour hand, near 12
+  for (let a = 0; a < 12; a++) {
+    const rad = (a * Math.PI) / 6;
+    setPix(Math.round(ckx + 18 * Math.cos(rad)), Math.round(cky + 18 * Math.sin(rad)), INK);
+    setPix(Math.round(ckx + 18 * Math.cos(rad)) + 1, Math.round(cky + 18 * Math.sin(rad)), INK);
+  }
 
-function drawKyivArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, SKY);
-  fillRect(x, y + h - 22, w, 22, RIVER);
-  // Smoke rising from the broken span.
-  disc((x + 72) * SS, (y + 26) * SS, 6 * SS, GREY);
-  disc((x + 68) * SS, (y + 16) * SS, 5 * SS, GREY);
-  disc((x + 76) * SS, (y + 10) * SS, 4 * SS, GREY);
-  // Bridge deck, middle span broken and dipped into the river.
-  line(x + 8, y + 34, x + 68, y + 34, 4, [110, 106, 96]);
-  line(x + 68, y + 34, x + 75, y + 48, 4, [110, 106, 96]);
-  line(x + 75, y + 48, x + 82, y + 34, 4, [110, 106, 96]);
-  line(x + 82, y + 34, x + 142, y + 34, 4, [110, 106, 96]);
-  line(x + 30, y + 34, x + 30, y + 50, 3, [110, 106, 96]);
-  line(x + 120, y + 34, x + 120, y + 50, 3, [110, 106, 96]);
-  disc((x + 75) * SS, (y + 44) * SS, 3 * SS, SUN);
-  polyline([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 1, LGREY, true);
-}
-
-function drawMarketsArt(x: number, y: number, w: number, h: number): void {
-  fillRect(x, y, w, h, WHITE);
-  line(x, y + 24, x + w, y + 24, 1, GRID);
-  line(x, y + 48, x + w, y + 48, 1, GRID);
-  polyline(
-    [[x + 12, y + 14], [x + 50, y + 26], [x + 88, y + 38], [x + 128, y + 58]],
-    3, RED, false,
-  );
-  poly([[x + 128, y + 58], [x + 118, y + 52], [x + 120, y + 62]], RED);
-  drawText("-3.7%", x + 12, y + 52, 18, RED, "left", 0);
-  polyline([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], 1, LGREY, true);
-}
-
-// ---------------------------------------------------------------- layout
-function drawFrontPage(): void {
-  fillRect(0, 0, W, H, PAPER);
-  // Frame.
-  polyline([[14, 14], [1010, 14], [1010, 1010], [14, 1010]], 3, INK, true);
-
-  // Masthead.
-  drawText("THE WORLD", 512, 30, 108, INK, "center", 14);
-  drawText("SATURDAY, 21 NOVEMBER 2026 — IN ONE IMAGE", 512, 160, 24, INK, "center", 1);
-  fillRect(30, 192, 964, 5, INK);
-  fillRect(30, 200, 964, 2, INK);
-
-  // Lead story.
-  drawText("CLIMATE — ANTALYA, TURKIYE", 30, 212, 22, RED, "left", 1);
-  drawText("CLIMATE TALKS RUN PAST", 512, 242, 46, INK, "center", 10);
-  drawText("DEADLINE — STILL NO DEAL", 512, 296, 46, INK, "center", 10);
-  drawLeadArt(30, 360, 964, 166);
-  const deck = [
-    "NEARLY 200 NATIONS MISS THE FRIDAY DEADLINE IN ANTALYA.",
-    "THE DRAFT DROPS EVERY MENTION OF FOSSIL FUELS.",
-    "ADAPTATION CASH OF 120BN A YEAR IS CUT TOO. NEW TEXT DUE SATURDAY.",
+  // --- delegates seated behind the table (4 figures, muted suits).
+  // Heads sit fully above the table edge so they read as people, not blobs.
+  const suitCols: RGB[] = [
+    [52, 68, 110],
+    [96, 96, 96],
+    [40, 110, 100],
+    [130, 60, 55],
   ];
-  deck.forEach((ln, i) => drawText(ln, 30, 538 + i * 25, 20, INK, "left", 0));
-  fillRect(30, 620, 964, 2, INK);
+  const headsX = [140, 320, 484, 660];
+  const headY = sy + 102;
+  for (let i = 0; i < 4; i++) {
+    const ax = headsX[i];
+    // shoulders / torso (trapezoid)
+    poly(
+      [
+        [ax - 34, sy + sh - 30],
+        [ax + 34, sy + sh - 30],
+        [ax + 22, headY + 12],
+        [ax - 22, headY + 12],
+      ],
+      suitCols[i],
+    );
+    // head + hair
+    circle(ax, headY, 13, SKIN);
+    ellipse(ax, headY - 8, 13, 7, INK);
+  }
 
-  // Secondary stories: three rows, small art left, headline + facts right.
-  const rows = [
+  // --- round table (big ellipse, wood) across the lower scene
+  const tcx = sx + sw / 2;
+  const tcy = sy + sh - 26;
+  ellipse(tcx, tcy, 452, 26, WOOD_LIGHT);
+  ellipse(tcx, tcy - 3, 452, 24, WOOD);
+  // table front apron
+  rect(sx + 40, tcy + 12, sw - 80, 10, WOOD_DARK);
+
+  // --- papers scattered on the table (left)
+  const paperSpots: Array<[number, number]> = [
+    [sx + 96, tcy - 22],
+    [sx + 150, tcy - 18],
+    [sx + 560, tcy - 20],
+  ];
+  for (const [px0, py0] of paperSpots) {
+    rect(px0, py0, 56, 20, WHITE);
+    rect(px0, py0, 56, 1, GREY_LINE);
+    hline(px0 + 6, py0 + 6, 44, GREY_LINE, 1);
+    hline(px0 + 6, py0 + 11, 36, GREY_LINE, 1);
+    hline(px0 + 6, py0 + 16, 44, GREY_LINE, 1);
+  }
+
+  // --- globe on the table, between the 2nd and 3rd delegates
+  const gx = sx + 400;
+  const gy = tcy - 34;
+  const gr = 30;
+  // stand
+  rect(gx - 3, gy + gr - 2, 6, 12, WOOD_DARK);
+  ellipse(gx, gy + gr + 10, 22, 5, WOOD_DARK);
+  // sphere
+  circle(gx, gy, gr, BLUE);
+  // landmasses (simple blobs)
+  ellipse(gx - 10, gy - 8, 12, 8, GREEN);
+  ellipse(gx + 10, gy + 6, 10, 7, GREEN);
+  ellipse(gx + 2, gy - 16, 7, 5, GREEN);
+  ellipse(gx - 16, gy + 12, 6, 4, GREEN);
+  // latitude lines (clipped chords)
+  for (const dy of [-14, 0, 14]) {
+    const hw = Math.floor(Math.sqrt(gr * gr - dy * dy));
+    hline(gx - hw, gy + dy, hw * 2, [200, 225, 240], 1);
+  }
+  // meridian (vertical chord through the centre, stays inside the sphere)
+  vline(gx, gy - 28, 56, [200, 225, 240], 1);
+
+  // --- the draft document on the table, right side: DRAFT + FOSSIL FUELS crossed out
+  const dx = sx + sw - 300;
+  const dy = tcy - 52;
+  const dw = 240;
+  const dh = 52;
+  rect(dx, dy, dw, dh, WHITE);
+  rect(dx, dy, dw, 2, INK);
+  rect(dx, dy + dh - 2, dw, 2, INK);
+  rect(dx, dy, 2, dh, INK);
+  rect(dx + dw - 2, dy, 2, dh, INK);
+  drawText(dx + 12, dy + 6, "DRAFT", 3, ACCENT);
+  hline(dx + 12, dy + 30, dw - 24, GREY_LINE, 1);
+  drawText(dx + 12, dy + 34, "FOSSIL FUELS", 3, ACCENT);
+  // red strike through FOSSIL FUELS
+  const strikeY = dy + 34 + 10;
+  line(dx + 10, strikeY, dx + dw - 10, strikeY - 2, ACCENT, 3);
+
+  // --- microphone at the centre of the table
+  const micX = tcx + 60;
+  line(micX, tcy - 8, micX, tcy - 26, INK, 3);
+  circle(micX, tcy - 30, 6, INK);
+  ellipse(micX, tcy - 6, 14, 4, WOOD_DARK);
+
+  // --- chair backs in the foreground corners
+  rect(sx + 18, sy + sh - 26, 64, 26, WOOD_DARK);
+  rect(sx + sw - 82, sy + sh - 26, 64, 26, WOOD_DARK);
+
+  // scene border
+  rect(sx, sy, sw, 2, INK);
+  rect(sx, sy + sh - 2, sw, 2, INK);
+  rect(sx, sy, 2, sh, INK);
+  rect(sx + sw - 2, sy, 2, sh, INK);
+}
+
+// ---------------------------------------------------------------- thumbnails
+function thumbMissile(x: number, y: number, w: number, h: number): void {
+  rect(x, y, w, h, NAVY);
+  // ground
+  rect(x, y + h - 12, w, 12, [40, 52, 74]);
+  hline(x, y + h - 12, w, [120, 130, 150], 2);
+  // trajectory arc (parabola from lower left to upper right)
+  let px0 = x + 6;
+  let py0 = y + h - 14;
+  for (let t = 1; t <= 20; t++) {
+    const fx = x + 6 + (t / 20) * (w - 18);
+    const fy = y + h - 14 - Math.sin((t / 20) * Math.PI * 0.52) * (h - 22);
+    line(Math.round(px0), Math.round(py0), Math.round(fx), Math.round(fy), WHITE, 2);
+    px0 = fx;
+    py0 = fy;
+  }
+  // impact flash at the arc end
+  circle(x + w - 12, y + 12, 5, SUN);
+  // red star bursts on the ground (explosions)
+  for (const bx of [x + 26, x + 58, x + 88]) {
+    const by = y + h - 16;
+    line(bx - 7, by, bx + 7, by, ACCENT, 3);
+    line(bx, by - 7, bx, by + 7, ACCENT, 3);
+    line(bx - 5, by - 5, bx + 5, by + 5, ACCENT, 2);
+    line(bx - 5, by + 5, bx + 5, by - 5, ACCENT, 2);
+  }
+  rect(x, y, w, 2, INK);
+  rect(x, y + h - 2, w, 2, INK);
+  rect(x, y, 2, h, INK);
+  rect(x + w - 2, y, 2, h, INK);
+}
+
+function thumbBridge(x: number, y: number, w: number, h: number): void {
+  rect(x, y, w, h, [207, 224, 234]);
+  // river
+  rect(x, y + h - 18, w, 18, [127, 168, 201]);
+  hline(x, y + h - 18, w, [90, 130, 170], 2);
+  // bridge towers
+  rect(x + 14, y + 10, 8, h - 26, [90, 90, 90]);
+  rect(x + w - 22, y + 10, 8, h - 26, [90, 90, 90]);
+  // deck with a broken gap in the middle
+  rect(x + 6, y + 26, 40, 5, [70, 70, 70]);
+  rect(x + w - 46, y + 26, 40, 5, [70, 70, 70]);
+  // tilted fallen segment
+  poly(
+    [
+      [x + 46, y + 28],
+      [x + 64, y + 28],
+      [x + 60, y + 44],
+      [x + 44, y + 42],
+    ],
+    [70, 70, 70],
+  );
+  // smoke puffs above the gap
+  circle(x + 52, y + 16, 7, [150, 150, 150]);
+  circle(x + 60, y + 10, 5, [170, 170, 170]);
+  circle(x + 46, y + 9, 4, [190, 190, 190]);
+  // small flame in the gap
+  circle(x + 55, y + 30, 4, SUN);
+  rect(x, y, w, 2, INK);
+  rect(x, y + h - 2, w, 2, INK);
+  rect(x, y, 2, h, INK);
+  rect(x + w - 2, y, 2, h, INK);
+}
+
+function thumbChart(x: number, y: number, w: number, h: number): void {
+  rect(x, y, w, h, WHITE);
+  // grid
+  for (let gy = y + 12; gy < y + h - 6; gy += 12) hline(x + 4, gy, w - 8, [220, 220, 220], 1);
+  for (let gx = x + 14; gx < x + w - 4; gx += 16) vline(gx, y + 6, h - 12, [220, 220, 220], 1);
+  // descending red line with arrowhead (the -3.7% figure is in the text
+  // beside the thumbnail, so the chart stays clean)
+  const pts: Array<[number, number]> = [
+    [x + 8, y + 10],
+    [x + 30, y + 16],
+    [x + 48, y + 14],
+    [x + 66, y + 30],
+    [x + 84, y + 38],
+    [x + w - 8, y + 52],
+  ];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], ACCENT, 3);
+  }
+  const [ax, ay] = pts[pts.length - 1];
+  poly(
+    [
+      [ax, ay],
+      [ax - 10, ay - 7],
+      [ax - 10, ay + 3],
+    ],
+    ACCENT,
+  );
+  rect(x, y, w, 2, INK);
+  rect(x, y + h - 2, w, 2, INK);
+  rect(x, y, 2, h, INK);
+  rect(x + w - 2, y, 2, h, INK);
+}
+
+// ---------------------------------------------------------------- page
+function drawPage(): void {
+  // outer frame
+  rect(FRAME, FRAME, W - 2 * FRAME, 2, INK);
+  rect(FRAME, H - FRAME - 2, W - 2 * FRAME, 2, INK);
+  rect(FRAME, FRAME, 2, H - 2 * FRAME, INK);
+  rect(W - FRAME - 2, FRAME, 2, H - 2 * FRAME, INK);
+
+  let y = 26;
+
+  // masthead
+  drawTextCenter(W / 2, y, "THE WORLD", 12, INK);
+  y += 12 * 7 + 10; // cap height 84 + gap
+  // dateline
+  drawTextCenter(W / 2, y, "SATURDAY, 21 NOVEMBER 2026 - IN ONE IMAGE", 3, INK);
+  y += 21 + 8;
+  // double rule
+  hline(MX, y, CW, RULE, 3);
+  y += 7;
+  hline(MX, y, CW, RULE, 1);
+  y += 10;
+
+  // kicker
+  drawText(MX, y, "CLIMATE - ANTALYA, TURKEY", 3, ACCENT);
+  y += 21 + 8;
+
+  // headline, own band, two lines
+  drawText(MX, y, "CLIMATE TALKS RUN PAST", 6, INK);
+  y += 52;
+  drawText(MX, y, "DEADLINE - STILL NO DEAL", 6, INK);
+  y += 42 + 10;
+
+  // lead illustration: COP31 hall scene
+  const sceneH = 178;
+  drawLeadScene(MX, y, CW, sceneH);
+  y += sceneH + 12;
+
+  // lead body: 4 short factual lines
+  const leadLines = [
+    "NEARLY 200 NATIONS MISS THE FRIDAY DEADLINE",
+    "IN ANTALYA. DRAFT DROPS FOSSIL FUELS AND CUTS",
+    "ADAPTATION CASH OF $120BN A YEAR. NEW TEXT DUE",
+    "SATURDAY.",
+  ];
+  for (const ln of leadLines) {
+    drawText(MX, y, ln, 3, INK);
+    y += 27;
+  }
+  y += 4;
+
+  // divider
+  hline(MX, y, CW, RULE, 2);
+  y += 10;
+
+  // secondary stories
+  const ROW_H = 78;
+  const THUMB_W = 110;
+  const THUMB_H = 64;
+  const TX = MX + THUMB_W + 14;
+  const rows: Array<{
+    thumb: (x: number, y: number, w: number, h: number) => void;
+    head: string;
+    body: string[];
+  }> = [
     {
-      art: drawPolandArt,
+      thumb: thumbMissile,
       head: "RUSSIAN MISSILES LAND IN POLAND",
-      body: "KH-101 CRUISE MISSILE DOWN NEAR NOWY LIPOWIEC. NATO CALLS IT A GRAVE VIOLATION. NO ONE IS HURT.",
+      body: [
+        "KH-101 MISSILE DOWN NEAR NOWY LIPOWIEC.",
+        "NATO CALLS IT A GRAVE VIOLATION. NO ONE HURT.",
+      ],
     },
     {
-      art: drawKyivArt,
+      thumb: thumbBridge,
       head: "KYIV BRIDGES HIT IN MASS BARRAGE",
-      body: "84 CRUISE MISSILES AND 404 DRONES IN ONE NIGHT. THREE DNIPRO BRIDGES DAMAGED. POWER, HEAT AND WATER CUT.",
+      body: [
+        "84 MISSILES AND 404 DRONES IN ONE NIGHT.",
+        "THREE DNIPRO BRIDGES DAMAGED. POWER, HEAT CUT.",
+      ],
     },
     {
-      art: drawMarketsArt,
+      thumb: thumbChart,
       head: "AI SELL-OFF SINKS US STOCKS",
-      body: "US STOCKS FALL 3.7% INTO CORRECTION AS AI SHARES SLIDE. NASDAQ DROPS 5.3%. NVIDIA SINKS 14%.",
+      body: [
+        "S&P FALLS 3.7% INTO CORRECTION AS AI SLIDES.",
+        "NASDAQ DROPS 5.3%. NVIDIA SINKS 14%.",
+      ],
     },
   ];
-  rows.forEach((row, i) => {
-    const ry = 630 + i * 86;
-    row.art(30, ry, 150, 72);
-    drawText(row.head, 196, ry + 2, 25, INK, "left", 0);
-    const lines = wrap(row.body, 798, 19);
-    lines.forEach((ln, j) => drawText(ln, 196, ry + 32 + j * 22, 19, INK, "left", 0));
-    if (i < 2) fillRect(30, ry + 79, 964, 1, LGREY);
-  });
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    r.thumb(MX, y + 4, THUMB_W, THUMB_H);
+    drawText(TX, y, r.head, 3, INK);
+    drawText(TX, y + 26, r.body[0], 3, INK);
+    drawText(TX, y + 52, r.body[1], 3, INK);
+    y += ROW_H;
+    if (i < rows.length - 1) {
+      hline(MX, y - 6, CW, [200, 194, 182], 1);
+    }
+  }
 
-  // Footer: in-brief strip.
-  fillRect(30, 886, 964, 2, INK);
-  fillRect(30, 877, 118, 18, PAPER);
-  drawText("IN BRIEF", 34, 877, 18, RED, "left", 1);
+  // footer rule
+  hline(MX, y, CW, RULE, 2);
+  y += 12;
+
+  // IN BRIEF — label, then a real gap, then 4 roomy lines
+  drawText(MX, y, "IN BRIEF", 3, ACCENT);
+  y += 21 + 16; // generous gap after the label (v1 fix)
   const briefs = [
-    "CYCLONE AKVAN: 370,000 EVACUATED IN ODISHA. NO DEATHS REPORTED.",
-    "WORLD COURT: ACTION URGED AFTER MYANMAR GENOCIDE RULING.",
-    "FRANCE SEEKS UN SECURITY COUNCIL MEETING OVER KYIV STRIKES.",
-    "ESTONIA TO SHUT ITS BORDER WITH RUSSIA FROM 1 DECEMBER.",
-    "CRICKET: JAISWAL 85, RAHUL 52 NOT OUT IN WELLINGTON.",
+    "CYCLONE AKVAN: 370,000 FLEE IN ODISHA. NO DEATHS.",
+    "WORLD COURT: ACTION URGED AFTER MYANMAR RULING.",
+    "FRANCE SEEKS UN SECURITY COUNCIL MEETING ON KYIV.",
+    "ESTONIA TO SHUT ITS BORDER WITH RUSSIA FROM 1 DEC.",
   ];
-  briefs.forEach((b, i) => {
-    const by = 898 + i * 19;
-    fillRect(30, by + 5, 8, 8, RED);
-    drawText(b, 46, by, 18, INK, "left", 0);
-  });
+  for (const b of briefs) {
+    rect(MX, y + 6, 10, 10, ACCENT); // square bullet
+    drawText(MX + 22, y, b, 3, INK);
+    y += 32; // generous line spacing (v1 fix)
+  }
 }
 
 // ---------------------------------------------------------------- main
 function main(): void {
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-  mkdirSync(outDir, { recursive: true });
-  drawFrontPage();
-  const png = encodePNG(W, H, downsample());
-  const sha = createHash("sha256").update(png).digest("hex");
-  writeFileSync(join(outDir, "entry.png"), png);
+  fs.mkdirSync(outDir, { recursive: true });
+  drawPage();
+  const png = encodePNG();
+  const pngPath = path.join(outDir, "entry.png");
+  fs.writeFileSync(pngPath, png);
+  const sha = crypto.createHash("sha256").update(png).digest("hex");
   const dossier = {
+    competition: "news-image-20261121",
+    version: 2,
     title: "THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026",
     date: "2026-11-21",
-    format: "1024x1024 PNG",
+    size: [W, H],
+    entry_png_bytes: png.length,
+    entry_png_sha256: sha,
     lead: {
       headline: "CLIMATE TALKS RUN PAST DEADLINE — STILL NO DEAL",
       facts: [
-        "COP31 in Antalya, Turkiye, missed its scheduled Friday finish and ran into overtime on Saturday 21 Nov 2026.",
-        "The latest draft drops every mention of fossil fuels (coal, oil, gas).",
-        "The draft also drops the $120bn-a-year adaptation finance figure.",
-        "Nearly 200 countries are negotiating; a new draft was due Saturday morning.",
+        "COP31 in Antalya ran past its Friday deadline with no deal; new draft due Saturday.",
+        "Draft dropped every mention of fossil fuels.",
+        "Draft dropped the $120bn/year adaptation finance figure.",
+        "Nearly 200 nations taking part.",
       ],
-      sources: ["Associated Press", "CNN", "Reuters", "BBC live"],
+      sources: ["AP", "CNN", "Reuters", "BBC"],
     },
-    secondaries: [
+    secondary: [
       {
         headline: "RUSSIAN MISSILES LAND IN POLAND",
         facts: [
-          "A Kh-101 cruise missile came down near Nowy Lipowiec on Friday 20 Nov 2026; two more objects fell nearby.",
-          "NATO Secretary-General Mark Rutte called it a grave violation of Polish airspace.",
-          "PM Donald Tusk called it a likely intentional provocation. No one was hurt in Poland.",
+          "Kh-101 cruise missile down near Nowy Lipowiec, Poland.",
+          "NATO called it a grave violation.",
+          "No one hurt.",
         ],
-        sources: ["Associated Press", "Reuters"],
+        sources: ["AP", "Reuters"],
       },
       {
         headline: "KYIV BRIDGES HIT IN MASS BARRAGE",
         facts: [
-          "Russia fired 84 cruise missiles and 404 drones at Ukraine in one overnight barrage.",
-          "Three bridges over the Dnipro in Kyiv were damaged; parts of the capital lost power, heat and water.",
-          "At least 8 people were killed.",
+          "84 cruise missiles and 404 drones in one night.",
+          "Three Dnipro bridges damaged.",
+          "Power, heat and water cut.",
         ],
-        sources: ["Kyiv Independent", "Associated Press", "BBC"],
+        sources: ["Kyiv Independent", "AP", "BBC"],
       },
       {
         headline: "AI SELL-OFF SINKS US STOCKS",
-        facts: [
-          "The S&P 500 fell 3.7% on Friday 20 Nov 2026, entering correction territory.",
-          "The Nasdaq fell 5.3% and turned negative for the year.",
-          "Nvidia sank 14% in a day as the AI trade unwound.",
-        ],
-        sources: ["Associated Press", "CNN", "Wall Street Journal", "Investopedia"],
+        facts: ["S&P -3.7%, into correction.", "Nasdaq -5.3%.", "Nvidia -14%."],
+        sources: ["AP", "CNN", "WSJ"],
       },
     ],
-    briefs: [
-      "Cyclone Akvan: 370,000 evacuated in Odisha; landfall near Gopalpur; no deaths reported (IMD).",
-      "Rights groups press for action after the ICJ found Myanmar guilty of Rohingya genocide (ruling 19 Nov 2026).",
-      "France seeks a UN Security Council meeting over the Kyiv strikes (Reuters, 20 Nov 2026).",
-      "Estonia to shut its road border with Russia from 1 December after an alleged arson attack (Reuters, 20 Nov 2026).",
-      "Cricket: Jaiswal 85 and Rahul 52 not out share a 130-run stand; India 159/1 reply to New Zealand's 368 in Wellington (Cricbuzz, 20 Nov 2026).",
+    in_brief: [
+      { text: "Cyclone Akvan: 370,000 evacuated in Odisha, no deaths reported.", source: "IMD" },
+      { text: "World Court: action urged after Myanmar genocide ruling.", source: "ICJ reporting" },
+      { text: "France seeks UN Security Council meeting over Kyiv strikes.", source: "wire reporting" },
+      { text: "Estonia to shut its border with Russia from 1 Dec.", source: "wire reporting" },
     ],
-    png_sha256: sha,
-    png_bytes: png.length,
+    changes_vs_v1: [
+      "Footer IN BRIEF: gap after the label and 32 px line spacing; 4 briefs instead of 5 crammed.",
+      "Lead illustration: full COP31 hall scene (windows, flag bunting, wall clock, five delegates at a round table, globe, crossed-out draft) instead of globe + draft box + sun.",
+    ],
   };
-  writeFileSync(join(outDir, "dossier.json"), JSON.stringify(dossier, null, 2) + "\n");
+  fs.writeFileSync(path.join(outDir, "dossier.json"), JSON.stringify(dossier, null, 2) + "\n");
   console.log(`entry.png ${png.length} bytes sha256 ${sha}`);
-  console.log("dossier.json written");
 }
 
 main();
