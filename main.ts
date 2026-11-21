@@ -1,602 +1,544 @@
-// news-image-20261121 v8 — fresh procedural front page, Node 22 stdlib only.
-// 1024x1024, software rasterizer (2x supersampled) + stroke vector font + PNG encoder.
-// No network, no Date, no randomness: two runs are byte-identical.
-//
-// FACTS (verified live in v1-v7, unchanged):
-// LEAD: COP31 Antalya overtime Sat 21 Nov — Friday deadline missed, draft drops
-//   fossil-fuel mentions + $120bn/yr adaptation, ~200 nations, new draft due Saturday.
-// SECONDARY: Russian Kh-101 missile down in Poland (Nowy Lipowiec, NATO "grave
-//   violation", no one hurt); Kyiv barrage (84 missiles + 404 drones, 3 Dnipro bridges
-//   damaged, power/heat/water cut); US AI sell-off (S&P -3.7% into correction,
-//   Nasdaq -5.3%, Nvidia -14%).
-// IN BRIEF: Cyclone Akvan (370,000 fled Odisha, no deaths); World Court action after
-//   Myanmar ruling; France seeks UNSC meeting on Kyiv; Estonia shuts Russia border
-//   from 1 Dec.
-//
-// v8 FIXES vs v7: (a) wall clock moved to the FAR LEFT of the hall wall, OVERTIME badge
-//   alone at top right, globe far below on the side table — "OVERTIME" fully visible
-//   at 480 with clear space; (b) Poland thumbnail redrawn concrete: field + pine
-//   trees + farmhouse + Polish flag + a recognisable cruise missile nose-down in a
-//   crater; (c) Kyiv smoke rebuilt as wide soft billowing columns of overlapping
-//   round puffs, no pointed tips.
+// NEWS-IMAGE-20261121 V9 — FRESH BUILD
+// THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026
+// NODE 22 STDLIB ONLY, NO NETWORK, DETERMINISTIC.
+// ALL TEXT IS ALL CAPS: THE STROKE FONT BELOW ONLY HAS CAPITAL GLYPHS.
+// FIXES VS V8: (A) KYIV SMOKE IS ORGANIC IRREGULAR PUFFS, NO BRIGHT CIRCLE
+// HIGHLIGHTS, NO HARD CIRCLE OUTLINES; (B) POLAND SMOKE IS A RISING,
+// SPREADING, FEATHERY PLUME, DARK AT THE BASE, NEVER A NEAT EGG;
+// (C) DELEGATE 1 HAIR HAS A SHARP SIDE PART, UNEVEN STRANDS AND A
+// JAGGED, WAVY EDGE, NEVER ONE SMOOTH SOLID CAP.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as zlib from "node:zlib";
-import * as crypto from "node:crypto";
+const W = 1024;
+const H = 1024;
+type RGB = [number, number, number];
+const NAVY: RGB = [22, 40, 63];
+const INK: RGB = [24, 28, 34];
+const RED: RGB = [178, 34, 34];
+const PAPER: RGB = [246, 241, 227];
+const CREAM: RGB = [252, 248, 238];
 
-const W = 1024, H = 1024, SS = 2, W2 = W * SS, H2 = H * SS;
-const buf = new Uint8Array(W2 * H2 * 4);
-
-// ---------- colour ----------
-function rgb(hex: string): [number, number, number] {
-  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+// ---------- FRAMEBUFFER ----------
+const fb = new Uint8Array(W * H * 3);
+for (let i = 0; i < W * H; i++) { fb[i * 3] = PAPER[0]; fb[i * 3 + 1] = PAPER[1]; fb[i * 3 + 2] = PAPER[2]; }
+function px(x: number, y: number, c: RGB): void {
+  const xi = Math.round(x); const yi = Math.round(y);
+  if (xi < 0 || yi < 0 || xi >= W || yi >= H) return;
+  const o = (yi * W + xi) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2];
 }
-const PAPER = rgb("#f6f1e4");
-const INK = rgb("#1b1813");
-const RED = rgb("#b3271e");
-const BLUE = rgb("#1f4e79");
-const GOLD = rgb("#c9a227");
-const CREAM = rgb("#eadfc6");
-const WOOD = rgb("#6e4a26");
-const WOODL = rgb("#8a5f36");
-
-// ---------- low-level pixels (SS coords) ----------
-function setPx(x: number, y: number, c: [number, number, number]): void {
-  if (x < 0 || y < 0 || x >= W2 || y >= H2) return;
-  const i = (y * W2 + x) * 4;
-  buf[i] = c[0]; buf[i + 1] = c[1]; buf[i + 2] = c[2]; buf[i + 3] = 255;
-}
-function fillRect(x: number, y: number, w: number, h: number, c: [number, number, number]): void {
-  const x0 = Math.max(0, Math.round(x * SS)), y0 = Math.max(0, Math.round(y * SS));
-  const x1 = Math.min(W2, Math.round((x + w) * SS)), y1 = Math.min(H2, Math.round((y + h) * SS));
-  for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) setPx(xx, yy, c);
-}
-function stamp(cx: number, cy: number, r: number, c: [number, number, number]): void {
-  const rr = r * r;
-  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(W2 - 1, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(H2 - 1, Math.ceil(cy + r));
-  for (let yy = y0; yy <= y1; yy++) for (let xx = x0; xx <= x1; xx++) {
-    const dx = xx - cx, dy = yy - cy;
-    if (dx * dx + dy * dy <= rr) setPx(xx, yy, c);
+function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
+  const x0 = Math.max(0, Math.round(x)); const y0 = Math.max(0, Math.round(y));
+  const x1 = Math.min(W, Math.round(x + w)); const y1 = Math.min(H, Math.round(y + h));
+  for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) {
+    const o = (yy * W + xx) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2];
   }
 }
-function circle(cx: number, cy: number, r: number, c: [number, number, number]): void {
-  stamp(cx * SS, cy * SS, r * SS, c);
-}
-function ellipse(cx: number, cy: number, rx: number, ry: number, c: [number, number, number]): void {
-  const x0 = Math.max(0, Math.floor((cx - rx) * SS)), x1 = Math.min(W2 - 1, Math.ceil((cx + rx) * SS));
-  const y0 = Math.max(0, Math.floor((cy - ry) * SS)), y1 = Math.min(H2 - 1, Math.ceil((cy + ry) * SS));
-  for (let yy = y0; yy <= y1; yy++) for (let xx = x0; xx <= x1; xx++) {
-    const dx = (xx / SS - cx) / rx, dy = (yy / SS - cy) / ry;
-    if (dx * dx + dy * dy <= 1) setPx(xx, yy, c);
+function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
+  if (r <= 0) return;
+  const y0 = Math.max(0, Math.ceil(cy - r)); const y1 = Math.min(H - 1, Math.floor(cy + r));
+  for (let y = y0; y <= y1; y++) {
+    const dy = (y - cy) / r; const dx = r * Math.sqrt(Math.max(0, 1 - dy * dy));
+    const x0 = Math.max(0, Math.ceil(cx - dx)); const x1 = Math.min(W - 1, Math.floor(cx + dx));
+    for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
   }
 }
-function line(x0: number, y0: number, x1: number, y1: number, w: number, c: [number, number, number]): void {
-  const dx = (x1 - x0) * SS, dy = (y1 - y0) * SS;
-  const len = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(len));
-  const r = Math.max(0.6, (w * SS) / 2);
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    stamp(x0 * SS + dx * t, y0 * SS + dy * t, r, c);
+function fillEllipse(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
+  if (rx <= 0 || ry <= 0) return;
+  const y0 = Math.max(0, Math.ceil(cy - ry)); const y1 = Math.min(H - 1, Math.floor(cy + ry));
+  for (let y = y0; y <= y1; y++) {
+    const dy = (y - cy) / ry; const dx = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+    const x0 = Math.max(0, Math.ceil(cx - dx)); const x1 = Math.min(W - 1, Math.floor(cx + dx));
+    for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
   }
 }
-function polyline(pts: number[], w: number, c: [number, number, number], closed = false): void {
-  const n = pts.length / 2;
-  for (let i = 0; i < n - 1; i++) line(pts[i * 2], pts[i * 2 + 1], pts[i * 2 + 2], pts[i * 2 + 3], w, c);
-  if (closed && n > 2) line(pts[(n - 1) * 2], pts[(n - 1) * 2 + 1], pts[0], pts[1], w, c);
-}
-function polyFill(pts: number[], c: [number, number, number]): void {
-  const P: number[][] = [];
-  for (let i = 0; i < pts.length; i += 2) P.push([pts[i] * SS, pts[i + 1] * SS]);
-  let minY = Infinity, maxY = -Infinity;
-  for (const p of P) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
-  const n = P.length;
-  for (let y = Math.max(0, Math.floor(minY)); y <= Math.min(H2 - 1, Math.ceil(maxY)); y++) {
+function fillPoly(pts: [number, number][], c: RGB): void {
+  if (pts.length < 3) return;
+  let minY = H; let maxY = 0;
+  for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
+  for (let y = Math.max(0, Math.ceil(minY)); y <= Math.min(H - 1, Math.floor(maxY)); y++) {
     const xs: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = P[i], b = P[(i + 1) % n];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i]; const b = pts[(i + 1) % pts.length];
       if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
-        xs.push(a[0] + ((y - a[1]) / (b[1] - a[1])) * (b[0] - a[0]));
+        xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
       }
     }
-    xs.sort((p, q) => p - q);
+    xs.sort((m, n) => m - n);
     for (let k = 0; k + 1 < xs.length; k += 2) {
-      const x0 = Math.max(0, Math.ceil(xs[k])), x1 = Math.min(W2 - 1, Math.floor(xs[k + 1]));
-      for (let x = x0; x <= x1; x++) setPx(x, y, c);
+      const x0 = Math.max(0, Math.ceil(xs[k])); const x1 = Math.min(W - 1, Math.floor(xs[k + 1]));
+      for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
     }
   }
 }
-function roundRect(x: number, y: number, w: number, h: number, r: number, c: [number, number, number]): void {
-  fillRect(x + r, y, w - 2 * r, h, c);
-  fillRect(x, y + r, w, h - 2 * r, c);
-  circle(x + r, y + r, r, c); circle(x + w - r, y + r, r, c);
-  circle(x + r, y + h - r, r, c); circle(x + w - r, y + h - r, r, c);
+function thickLine(x1: number, y1: number, x2: number, y2: number, w: number, c: RGB): void {
+  const d = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(1, Math.ceil(d));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    fillCircle(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, w / 2, c);
+  }
 }
-function arcPts(cx: number, cy: number, r: number, a0: number, a1: number, step = 0.12): number[] {
-  const pts: number[] = [];
-  for (let a = a0; a <= a1 + 1e-6; a += step) pts.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
-  return pts;
+function thinLine(x1: number, y1: number, x2: number, y2: number, c: RGB): void {
+  const d = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(1, Math.ceil(d * 2));
+  for (let i = 0; i <= steps; i++) { const t = i / steps; px(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, c); }
+}
+function circleOutline(cx: number, cy: number, r: number, w: number, c: RGB): void {
+  const steps = Math.max(24, Math.ceil(r * 6));
+  for (let i = 0; i < steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    fillCircle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, w / 2, c);
+  }
+}
+function roundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
+  fillRect(x + r, y, w - 2 * r, h, c); fillRect(x, y + r, w, h - 2 * r, c);
+  fillCircle(x + r, y + r, r, c); fillCircle(x + w - r, y + r, r, c);
+  fillCircle(x + r, y + h - r, r, c); fillCircle(x + w - r, y + h - r, r, c);
 }
 
-// ---------- stroke vector font (grid 0..8 x 0..12) ----------
-type Glyph = { w: number; s: number[][]; dot?: boolean };
-const G: Record<string, Glyph> = {
-  "A": { w: 9, s: [[0, 12, 4, 0, 8, 12], [2.2, 8, 5.8, 8]] },
-  "B": { w: 9, s: [[1, 0, 6, 0, 8, 2, 8, 4.5, 6, 6, 1, 6], [6, 6, 8, 7.5, 8, 10, 6, 12, 1, 12, 1, 0]] },
-  "C": { w: 9, s: [[8, 2, 6, 0, 2, 0, 0, 2, 0, 10, 2, 12, 6, 12, 8, 10]] },
-  "D": { w: 9, s: [[1, 0, 5, 0, 8, 3, 8, 9, 5, 12, 1, 12, 1, 0]] },
-  "E": { w: 9, s: [[8, 0, 1, 0, 1, 12, 8, 12], [1, 6, 6, 6]] },
-  "F": { w: 9, s: [[8, 0, 1, 0, 1, 12], [1, 6, 6, 6]] },
-  "G": { w: 9, s: [[8, 2, 6, 0, 2, 0, 0, 2, 0, 10, 2, 12, 6, 12, 8, 10, 8, 6, 4.5, 6]] },
-  "H": { w: 9, s: [[1, 0, 1, 12], [7, 0, 7, 12], [1, 6, 7, 6]] },
-  "I": { w: 5, s: [[2.5, 0, 2.5, 12], [0.5, 0, 4.5, 0], [0.5, 12, 4.5, 12]] },
-  "J": { w: 8, s: [[6, 0, 6, 10, 4.5, 12, 2, 12, 0.8, 10.5], [3, 0, 6, 0]] },
-  "K": { w: 9, s: [[1, 0, 1, 12], [7.5, 0, 1, 6, 7.5, 12]] },
-  "L": { w: 8, s: [[1, 0, 1, 12, 7, 12]] },
-  "M": { w: 10, s: [[1, 12, 1, 0, 5, 7, 9, 0, 9, 12]] },
-  "N": { w: 9, s: [[1, 12, 1, 0, 7, 12, 7, 0]] },
-  "O": { w: 9, s: [[2, 0, 6, 0, 8, 2, 8, 10, 6, 12, 2, 12, 0, 10, 0, 2, 2, 0]] },
-  "P": { w: 9, s: [[1, 12, 1, 0, 6, 0, 8, 2, 8, 5, 6, 6, 1, 6]] },
-  "Q": { w: 9, s: [[2, 0, 6, 0, 8, 2, 8, 10, 6, 12, 2, 12, 0, 10, 0, 2, 2, 0], [5, 8, 8, 12]] },
-  "R": { w: 9, s: [[1, 12, 1, 0, 6, 0, 8, 2, 8, 5, 6, 6, 1, 6], [5, 6, 8, 12]] },
-  "S": { w: 9, s: [[8, 1.5, 6, 0, 2, 0, 0, 2, 0, 5, 2.5, 6, 6, 6, 8, 7.5, 8, 10, 6, 12, 2, 12, 0, 10.5]] },
-  "T": { w: 9, s: [[0.5, 0, 7.5, 0], [4, 0, 4, 12]] },
-  "U": { w: 9, s: [[1, 0, 1, 10, 2, 12, 6, 12, 7, 10, 7, 0]] },
-  "V": { w: 9, s: [[1, 0, 4, 12, 7, 0]] },
-  "W": { w: 11, s: [[1, 0, 2.5, 12, 5.5, 6, 8.5, 12, 10, 0]] },
-  "X": { w: 9, s: [[1, 0, 7, 12], [7, 0, 1, 12]] },
-  "Y": { w: 9, s: [[1, 0, 4, 6, 7, 0], [4, 6, 4, 12]] },
-  "Z": { w: 9, s: [[1, 0, 7, 0, 1, 12, 7, 12]] },
-  "0": { w: 9, s: [[2, 0, 6, 0, 8, 2, 8, 10, 6, 12, 2, 12, 0, 10, 0, 2, 2, 0]] },
-  "1": { w: 6, s: [[2, 2.5, 4, 0, 4, 12], [1, 12, 6.5, 12]] },
-  "2": { w: 9, s: [[1, 2, 3, 0, 6, 0, 8, 2, 8, 5, 1, 12, 8, 12]] },
-  "3": { w: 9, s: [[1.5, 1, 4, 0, 6.5, 1, 8, 3, 8, 5, 5, 6], [5, 6, 8, 7, 8, 10, 6, 12, 2, 12, 0.5, 11]] },
-  "4": { w: 9, s: [[6, 0, 6, 12], [1, 8, 7, 8], [6, 0, 0.5, 8]] },
-  "5": { w: 9, s: [[8, 0, 1, 0, 1, 6, 6, 6, 8, 8, 8, 10, 6, 12, 1, 12]] },
-  "6": { w: 9, s: [[8, 0.5, 4, 0, 1, 3, 1, 9, 2, 12, 6, 12, 8, 10, 8, 7, 6, 5, 2, 5]] },
-  "7": { w: 9, s: [[1, 0, 7, 0, 3.5, 12]] },
-  "8": { w: 9, s: [[3, 0, 6, 0, 8, 2, 8, 5, 6, 6, 2, 6, 0, 5, 0, 2, 2, 0], [6, 6, 8, 8, 8, 10, 6, 12, 2, 12, 0, 10, 0, 8, 2, 6]] },
-  "9": { w: 9, s: [[2, 12, 6, 12, 8, 10, 8, 3, 6, 0, 2, 0, 0, 2, 0, 5, 2, 6, 6, 6]] },
-  " ": { w: 4, s: [] },
-  ".": { w: 4, s: [[2, 10.8, 2, 12]] },
-  ",": { w: 4, s: [[2, 10, 2, 11.5, 1, 12.6]] },
-  ":": { w: 4, s: [[2, 3.5, 2, 5], [2, 10, 2, 11.5]] },
-  ";": { w: 4, s: [[2, 3.5, 2, 5], [2, 10, 2, 11.5, 1, 12.6]] },
-  "-": { w: 8, s: [[1, 6, 7, 6]] },
-  "–": { w: 9, s: [[0.5, 6, 7.5, 6]] },
-  "—": { w: 11, s: [[0, 6, 8, 6]] },
-  "−": { w: 8, s: [[1, 6, 7, 6]] },
-  "'": { w: 4, s: [[2, 0, 1.5, 3]] },
-  '"': { w: 7, s: [[1.5, 0, 1, 3], [5.5, 0, 5, 3]] },
-  "!": { w: 4, s: [[2, 0, 2, 8], [2, 10.5, 2, 12]] },
-  "?": { w: 9, s: [[2, 1.5, 4, 0, 6.5, 0.5, 7.5, 2.5, 7.5, 4, 5.5, 6, 4, 7, 4, 9], [4, 10.8, 4, 12]] },
-  "$": { w: 9, s: [[7.5, 1.5, 5.5, 0, 2.5, 0, 0.8, 1.8, 0.8, 4.5, 2.5, 6, 5.5, 6, 7.2, 7.5, 7.2, 10, 5.5, 12, 2.5, 12, 0.8, 10.5], [4, -0.5, 4, 12.5]] },
-  "%": { w: 11, s: [[0.8, 1.4, 1.4, 0.8, 3, 0.8, 3.6, 1.4, 3.6, 3, 3, 3.6, 1.4, 3.6, 0.8, 3, 0.8, 1.4], [7.4, 8.4, 8, 7.8, 9.6, 7.8, 10.2, 8.4, 10.2, 10, 9.6, 10.6, 8, 10.6, 7.4, 10, 7.4, 8.4], [10, 0.5, 1, 11.5]] },
-  "&": { w: 10, s: [[5, 0.5, 2.5, 0.5, 1, 2, 1, 4.5, 2.5, 6, 5.5, 6, 7, 4.5, 7, 2, 5, 0.5], [6.8, 0.8, 2, 10.5, 3.2, 12, 6.5, 12, 7.8, 10.5]] },
-  "(": { w: 5, s: [[4, 0, 2, 2, 1, 6, 2, 10, 4, 12]] },
-  ")": { w: 5, s: [[1, 0, 3, 2, 4, 6, 3, 10, 1, 12]] },
-  "/": { w: 7, s: [[6, 0, 1, 12]] },
-  "+": { w: 9, s: [[4, 2, 4, 10], [1, 6, 7, 6]] },
-  "=": { w: 8, s: [[1, 4, 7, 4], [1, 8, 7, 8]] },
-  "•": { w: 6, s: [], dot: true },
+// ---------- STROKE FONT (CAPITALS ONLY) ----------
+// GLYPH GRID: X 0..6, Y 0..8 (TOP TO BOTTOM). EACH GLYPH IS A LIST OF POLYLINES.
+type Pt = [number, number];
+const G: Record<string, Pt[][]> = {
+  A: [[[0, 8], [3, 0], [6, 8]], [[1.6, 5.4], [4.4, 5.4]]],
+  B: [[[0, 0], [0, 8]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]], [[0, 4], [4, 4], [5, 5], [5, 7], [4, 8], [0, 8]]],
+  C: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 7], [1, 8], [4, 8], [5, 7]]],
+  D: [[[0, 0], [0, 8]], [[0, 0], [4, 0], [6, 2], [6, 6], [4, 8], [0, 8]]],
+  E: [[[5, 0], [0, 0], [0, 8], [5, 8]], [[0, 4], [4, 4]]],
+  F: [[[5, 0], [0, 0], [0, 8]], [[0, 4], [4, 4]]],
+  G: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 7], [1, 8], [4, 8], [5, 7], [5, 4], [3, 4]]],
+  H: [[[0, 0], [0, 8]], [[6, 0], [6, 8]], [[0, 4], [6, 4]]],
+  I: [[[3, 0], [3, 8]], [[1, 0], [5, 0]], [[1, 8], [5, 8]]],
+  J: [[[5, 0], [5, 7], [4, 8], [1, 8], [0, 7]]],
+  K: [[[0, 0], [0, 8]], [[5, 0], [0, 4], [5, 8]]],
+  L: [[[0, 0], [0, 8], [5, 8]]],
+  M: [[[0, 8], [0, 0], [3, 4.5], [6, 0], [6, 8]]],
+  N: [[[0, 8], [0, 0], [6, 8], [6, 0]]],
+  O: [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]]],
+  P: [[[0, 8], [0, 0]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]]],
+  Q: [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]], [[3.6, 5], [6, 8]]],
+  R: [[[0, 8], [0, 0]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]], [[3, 4], [6, 8]]],
+  S: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 3], [1, 4], [4, 4], [5, 5], [5, 7], [4, 8], [1, 8], [0, 7]]],
+  T: [[[0, 0], [6, 0]], [[3, 0], [3, 8]]],
+  U: [[[0, 0], [0, 7], [1, 8], [5, 8], [6, 7], [6, 0]]],
+  V: [[[0, 0], [3, 8], [6, 0]]],
+  W: [[[0, 0], [1.5, 8], [3, 4], [4.5, 8], [6, 0]]],
+  X: [[[0, 0], [6, 8]], [[6, 0], [0, 8]]],
+  Y: [[[0, 0], [3, 4], [6, 0]], [[3, 4], [3, 8]]],
+  Z: [[[0, 0], [6, 0], [0, 8], [6, 8]]],
+  '0': [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]]],
+  '1': [[[1.5, 1.5], [3, 0], [3, 8]], [[1, 8], [5, 8]]],
+  '2': [[[0, 1], [1, 0], [5, 0], [6, 1], [6, 3], [0, 8], [6, 8]]],
+  '3': [[[0, 0], [4, 0], [6, 2], [5, 4], [6, 6], [4, 8], [0, 8]]],
+  '4': [[[4, 0], [0, 6], [6, 6]], [[4, 0], [4, 8]]],
+  '5': [[[5, 0], [0, 0], [0, 4], [4, 4], [6, 6], [5, 8], [1, 8], [0, 7]]],
+  '6': [[[5, 1], [4, 0], [1, 0], [0, 2], [0, 7], [1, 8], [5, 8], [6, 7], [6, 5], [5, 4], [0, 4]]],
+  '7': [[[0, 0], [6, 0], [3, 8]]],
+  '8': [[[2, 0], [4, 0], [5, 1], [5, 3], [4, 4], [2, 4], [1, 3], [1, 1], [2, 0]], [[2, 4], [4, 4], [5, 5], [5, 7], [4, 8], [2, 8], [1, 7], [1, 5], [2, 4]]],
+  '9': [[[0, 7], [0, 3], [1, 1], [2, 0], [5, 0], [6, 1], [6, 5], [5, 6], [0, 6]], [[5, 6], [5, 8], [4, 8]]],
+  '-': [[[0.5, 4], [5.5, 4]]],
+  '—': [[[0, 4], [6, 4]]],
+  '/': [[[1, 8], [5, 0]]],
+  '(': [[[4, 0], [2, 2], [2, 6], [4, 8]]],
+  ')': [[[2, 0], [4, 2], [4, 6], [2, 8]]],
+  '+': [[[3, 1], [3, 7]], [[0, 4], [6, 4]]],
+  '=': [[[0, 3], [6, 3]], [[0, 5.5], [6, 5.5]]],
+  "'": [[[3, 0], [2.4, 2.4]]],
+  '!': [[[3, 0], [3, 5.5]]],
+  '?': [[[1, 1], [2, 0], [5, 0], [6, 1], [6, 3], [3, 5], [3, 6]]],
+  '$': [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 3], [1, 4], [4, 4], [5, 5], [5, 7], [4, 8], [1, 8], [0, 7]], [[3, -0.6], [3, 8.6]]],
 };
-function glyph(ch: string): Glyph {
-  if (G[ch]) return G[ch];
-  if (ch === "’" || ch === "‘") return G["'"];
-  if (ch === "“" || ch === "”") return G['"'];
-  return { w: 9, s: [] };
+const WIDE: Record<string, number> = { I: 3.6, ' ': 4, '.': 3, ',': 3, ':': 3, ';': 3, '!': 3, '?': 6, '%': 7, '(': 4, ')': 4, "'": 3, '-': 6, '—': 7.5, '/': 6, '+': 6, '=': 6, '$': 6 };
+function charW(ch: string, size: number, track: number): number {
+  const u = size / 8;
+  const wu = WIDE[ch] ?? 6;
+  return (wu + 1.4) * u + track;
 }
-function textWidth(str: string, size: number, track = 0): number {
-  const s = size / 12;
-  let w = 0;
-  for (const ch of str) w += glyph(ch).w * s + track;
-  return w - (str.length ? track : 0);
+function textW(s: string, size: number, track: number): number {
+  let w = 0; for (const ch of s) w += charW(ch, size, track); return w - track;
 }
-function drawText(str: string, x: number, y: number, size: number, c: [number, number, number], o: { weight?: number; track?: number; align?: string } = {}): number {
-  const weight = o.weight || 1, track = o.track || 0;
-  const w = textWidth(str, size, track);
-  let pen = x;
-  if (o.align === "center") pen = x - w / 2;
-  else if (o.align === "right") pen = x - w;
-  const s = size / 12;
-  const lw = Math.max(0.9, size * 0.13 * weight);
-  for (const ch of str) {
-    const g = glyph(ch);
-    if (g.dot) circle(pen + 3 * s, y + 6 * s, Math.max(1.1, size * 0.085), c);
-    else for (const st of g.s) {
-      const pts: number[] = [];
-      for (let i = 0; i < st.length; i += 2) pts.push(pen + st[i] * s, y + st[i + 1] * s);
-      polyline(pts, lw, c);
-    }
-    pen += g.w * s + track;
+function drawGlyph(ch: string, x: number, yTop: number, size: number, sw: number, c: RGB): void {
+  const u = size / 8;
+  if (ch === ' ') return;
+  if (ch === '.' || ch === '•') { fillCircle(x + 3 * u, yTop + 7.4 * u, Math.max(1.4, sw * 0.62), c); return; }
+  if (ch === ',') { fillCircle(x + 3 * u, yTop + 7.4 * u, Math.max(1.4, sw * 0.62), c); thickLine(x + 3 * u, yTop + 7.6 * u, x + 1.8 * u, yTop + 9 * u, sw * 0.8, c); return; }
+  if (ch === ':') { fillCircle(x + 3 * u, yTop + 2.4 * u, Math.max(1.3, sw * 0.55), c); fillCircle(x + 3 * u, yTop + 6.8 * u, Math.max(1.3, sw * 0.55), c); return; }
+  if (ch === ';') { fillCircle(x + 3 * u, yTop + 2.4 * u, Math.max(1.3, sw * 0.55), c); fillCircle(x + 3 * u, yTop + 6.8 * u, Math.max(1.3, sw * 0.55), c); thickLine(x + 3 * u, yTop + 7 * u, x + 1.8 * u, yTop + 9 * u, sw * 0.8, c); return; }
+  if (ch === '!') { thickLine(x + 3 * u, yTop + 0.2 * u, x + 3 * u, yTop + 5.2 * u, sw, c); fillCircle(x + 3 * u, yTop + 7.2 * u, Math.max(1.3, sw * 0.55), c); return; }
+  if (ch === '%') {
+    circleOutline(x + 1.9 * u, yTop + 1.9 * u, 1.35 * u, Math.max(1.2, sw * 0.8), c);
+    circleOutline(x + 4.6 * u, yTop + 6.1 * u, 1.35 * u, Math.max(1.2, sw * 0.8), c);
+    thickLine(x + 5.4 * u, yTop + 0.4 * u, x + 1.2 * u, yTop + 7.6 * u, sw * 0.85, c);
+    return;
   }
-  return w;
+  const glyph = G[ch]; if (!glyph) return;
+  for (const line of glyph) {
+    if (line.length === 1) { fillCircle(x + line[0][0] * u, yTop + line[0][1] * u, sw / 2, c); continue; }
+    for (let i = 0; i + 1 < line.length; i++) {
+      thickLine(x + line[i][0] * u, yTop + line[i][1] * u, x + line[i + 1][0] * u, yTop + line[i + 1][1] * u, sw, c);
+    }
+  }
 }
-function wrap(str: string, maxW: number, size: number, track = 0): string[] {
-  const words = str.split(" ");
-  const lines: string[] = [];
-  let cur = "";
+function drawText(s: string, x: number, yTop: number, size: number, c: RGB, align: 'l' | 'c' | 'r' = 'l', track = 0, swMul = 0.19): void {
+  const w = textW(s, size, track);
+  let cx = x; if (align === 'c') cx = x - w / 2; if (align === 'r') cx = x - w;
+  const sw = Math.max(1.1, size * swMul);
+  let cur = cx;
+  for (const ch of s) { drawGlyph(ch, cur, yTop, size, sw, c); cur += charW(ch, size, track); }
+}
+function wrap(s: string, maxW: number, size: number, track = 0): string[] {
+  const words = s.split(' '); const lines: string[] = []; let cur = '';
   for (const wd of words) {
-    const test = cur ? cur + " " + wd : wd;
-    if (textWidth(test, size, track) <= maxW || !cur) cur = test;
+    const t = cur ? cur + ' ' + wd : wd;
+    if (textW(t, size, track) <= maxW || !cur) cur = t;
     else { lines.push(cur); cur = wd; }
   }
   if (cur) lines.push(cur);
   return lines;
 }
 
-// ---------- PNG ----------
-const CRC_TABLE: number[] = [];
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  CRC_TABLE[n] = c >>> 0;
+// ---------- ORGANIC SMOKE (FIX A + B) ----------
+// KYIV: OVERLAPPING IRREGULAR BLOBS IN VARIED GREYS, NO BRIGHT CIRCLE
+// HIGHLIGHT, NO HARD CIRCLE OUTLINE.
+function kyivSmoke(cx: number, cy: number, s: number): void {
+  const g1: RGB = [88, 84, 80]; const g2: RGB = [112, 108, 103]; const g3: RGB = [138, 134, 128]; const g4: RGB = [164, 160, 153];
+  fillEllipse(cx, cy + 6 * s, 26 * s, 13 * s, g1);
+  fillEllipse(cx - 16 * s, cy + 2 * s, 18 * s, 11 * s, g2);
+  fillEllipse(cx + 15 * s, cy + 3 * s, 19 * s, 12 * s, g2);
+  fillEllipse(cx - 6 * s, cy - 6 * s, 20 * s, 12 * s, g3);
+  fillEllipse(cx + 12 * s, cy - 8 * s, 15 * s, 10 * s, g3);
+  fillEllipse(cx - 20 * s, cy - 5 * s, 11 * s, 8 * s, g4);
+  fillEllipse(cx + 2 * s, cy - 13 * s, 14 * s, 8 * s, g4);
+  fillEllipse(cx + 22 * s, cy - 11 * s, 9 * s, 6 * s, g4);
+  fillEllipse(cx - 2 * s, cy - 18 * s, 9 * s, 5 * s, g3);
+  fillEllipse(cx + 10 * s, cy - 17 * s, 7 * s, 4.5 * s, g4);
+  thickLine(cx - 24 * s, cy - 8 * s, cx - 34 * s, cy - 16 * s, 3.5 * s, g3);
+  thickLine(cx + 24 * s, cy - 10 * s, cx + 33 * s, cy - 19 * s, 3 * s, g4);
+  thickLine(cx + 4 * s, cy - 19 * s, cx + 8 * s, cy - 27 * s, 2.6 * s, g3);
 }
-function crc32(b: Buffer): number {
+// POLAND: RISING PLUME, WIDENS AND SPREADS UPWARD, DARK AT BASE,
+// FEATHERY RAGGED TOP. NEVER A NEAT EGG.
+function polandSmoke(bx: number, by: number, s: number): void {
+  const d: RGB = [74, 72, 70]; const m: RGB = [104, 102, 99]; const l: RGB = [134, 132, 128]; const p: RGB = [164, 161, 156];
+  fillEllipse(bx, by, 22 * s, 9 * s, d);
+  fillEllipse(bx - 8 * s, by - 9 * s, 24 * s, 11 * s, d);
+  fillEllipse(bx + 10 * s, by - 10 * s, 26 * s, 12 * s, m);
+  fillEllipse(bx - 16 * s, by - 20 * s, 28 * s, 13 * s, m);
+  fillEllipse(bx + 14 * s, by - 22 * s, 30 * s, 13 * s, l);
+  fillEllipse(bx - 4 * s, by - 32 * s, 30 * s, 13 * s, l);
+  fillEllipse(bx + 20 * s, by - 33 * s, 20 * s, 10 * s, p);
+  fillEllipse(bx - 26 * s, by - 30 * s, 16 * s, 9 * s, p);
+  fillEllipse(bx - 30 * s, by - 40 * s, 8 * s, 5 * s, p);
+  fillEllipse(bx - 12 * s, by - 44 * s, 9 * s, 5 * s, l);
+  fillEllipse(bx + 6 * s, by - 45 * s, 8 * s, 5 * s, p);
+  fillEllipse(bx + 24 * s, by - 42 * s, 9 * s, 5 * s, l);
+  fillEllipse(bx + 36 * s, by - 36 * s, 7 * s, 4 * s, p);
+  thickLine(bx - 34 * s, by - 34 * s, bx - 44 * s, by - 44 * s, 3 * s, l);
+  thickLine(bx + 30 * s, by - 38 * s, bx + 40 * s, by - 48 * s, 2.6 * s, p);
+  thickLine(bx + 2 * s, by - 44 * s, bx + 0 * s, by - 54 * s, 2.4 * s, p);
+}
+
+// ---------- DELEGATES ----------
+// FIX C: DELEGATE 1 HAIR — SHARP SIDE PART, UNEVEN STRANDS, JAGGED WAVY
+// LOWER EDGE, NEVER ONE SMOOTH SOLID CAP.
+function hairParted(cx: number, cy: number, r: number, col: RGB, light: RGB): void {
+  const edge: [number, number][] = [];
+  const n = 15;
+  for (let i = 0; i <= n; i++) {
+    const a = Math.PI + (i / n) * Math.PI;
+    const rr = r * (1 + (i % 2 === 0 ? 0.02 : -0.06));
+    edge.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.92 - r * 0.06]);
+  }
+  const fringe: [number, number][] = [];
+  for (let i = 0; i <= 10; i++) {
+    const fx = cx - r + (i / 10) * 2 * r;
+    const fy = cy - r * 0.28 + (i % 2 === 0 ? 0 : r * 0.22) + (i / 10) * r * 0.18;
+    fringe.push([fx, fy]);
+  }
+  fillPoly([...edge, ...fringe.reverse()], col);
+  thickLine(cx - r * 0.34, cy - r * 0.92, cx - r * 0.18, cy - r * 0.12, 2.2, light);
+  const strands: [number, number, number, number][] = [
+    [-0.62, -0.72, -0.78, -0.05], [-0.42, -0.80, -0.52, -0.02], [-0.20, -0.86, -0.22, 0.02],
+    [0.02, -0.88, 0.10, -0.06], [0.24, -0.84, 0.38, -0.10], [0.46, -0.76, 0.66, -0.14],
+    [0.64, -0.62, 0.82, -0.22], [-0.72, -0.55, -0.88, 0.02], [0.30, -0.70, 0.44, 0.06],
+  ];
+  for (const s of strands) thickLine(cx + s[0] * r, cy + s[1] * r, cx + s[2] * r, cy + s[3] * r, 1.8, light);
+  thickLine(cx - r * 0.05, cy - r * 0.9, cx + r * 0.05, cy - r * 0.3, 1.6, col);
+  thickLine(cx + r * 0.42, cy - r * 0.78, cx + r * 0.55, cy - r * 0.2, 1.6, [30, 24, 20]);
+}
+function face(cx: number, cy: number, r: number, skin: RGB, opts: { glasses?: boolean; beard?: boolean } = {}): void {
+  fillCircle(cx, cy, r, skin);
+  fillCircle(cx - r * 0.36, cy - r * 0.08, r * 0.13, [255, 255, 255]);
+  fillCircle(cx + r * 0.36, cy - r * 0.08, r * 0.13, [255, 255, 255]);
+  fillCircle(cx - r * 0.36, cy - r * 0.08, r * 0.06, INK);
+  fillCircle(cx + r * 0.36, cy - r * 0.08, r * 0.06, INK);
+  thickLine(cx - r * 0.55, cy - r * 0.32, cx - r * 0.18, cy - r * 0.36, 1.8, [60, 45, 35]);
+  thickLine(cx + r * 0.18, cy - r * 0.36, cx + r * 0.55, cy - r * 0.32, 1.8, [60, 45, 35]);
+  thickLine(cx, cy + r * 0.02, cx - r * 0.06, cy + r * 0.34, 1.8, [150, 105, 80]);
+  thickLine(cx - r * 0.26, cy + r * 0.55, cx + r * 0.26, cy + r * 0.55, 2, [120, 60, 50]);
+  if (opts.beard) {
+    fillEllipse(cx, cy + r * 0.62, r * 0.72, r * 0.42, [90, 80, 75]);
+    thickLine(cx - r * 0.26, cy + r * 0.55, cx + r * 0.26, cy + r * 0.55, 2, [60, 45, 40]);
+  }
+  if (opts.glasses) {
+    circleOutline(cx - r * 0.36, cy - r * 0.08, r * 0.24, 1.6, INK);
+    circleOutline(cx + r * 0.36, cy - r * 0.08, r * 0.24, 1.6, INK);
+    thickLine(cx - r * 0.12, cy - r * 0.08, cx + r * 0.12, cy - r * 0.08, 1.6, INK);
+  }
+}
+function delegate(x: number, suit: RGB, skin: RGB, hair: 'parted' | 'grey' | 'bald' | 'bob' | 'curly', opts: { glasses?: boolean; beard?: boolean } = {}): void {
+  const hy = 402; const r = 24;
+  fillPoly([[x - 46, 560], [x - 38, 448], [x + 38, 448], [x + 46, 560]], suit);
+  fillPoly([[x - 12, 448], [x, 470], [x + 12, 448], [x + 8, 446], [x, 452], [x - 8, 446]], [250, 250, 248]);
+  fillPoly([[x - 5, 452], [x, 458], [x + 5, 452], [x + 7, 478], [x, 512], [x - 7, 478]], RED);
+  fillRect(x - 9, hy + 14, 18, 16, skin);
+  fillCircle(x - r - 1, hy + 2, 5, skin); fillCircle(x + r + 1, hy + 2, 5, skin);
+  face(x, hy, r, skin, opts);
+  if (hair === 'parted') hairParted(x, hy, r + 2, [52, 38, 28], [122, 96, 66]);
+  else if (hair === 'grey') {
+    fillPoly([[x - r - 1, hy - 2], [x - r, hy - r - 2], [x + r, hy - r - 2], [x + r + 1, hy - 2], [x + r * 0.6, hy - r * 0.42], [x - r * 0.6, hy - r * 0.42]], [168, 164, 158]);
+    thickLine(x - r * 0.3, hy - r * 0.9, x - r * 0.2, hy - r * 0.4, 1.6, [210, 206, 198]);
+    thickLine(x + r * 0.2, hy - r * 0.9, x + r * 0.3, hy - r * 0.4, 1.6, [210, 206, 198]);
+  } else if (hair === 'bald') {
+    fillPoly([[x - r, hy - 2], [x - r - 1, hy - r * 0.5], [x - r * 0.7, hy - r * 0.7], [x - r * 0.4, hy - r * 0.3]], [200, 196, 190]);
+    fillPoly([[x + r, hy - 2], [x + r + 1, hy - r * 0.5], [x + r * 0.7, hy - r * 0.7], [x + r * 0.4, hy - r * 0.3]], [200, 196, 190]);
+  } else if (hair === 'bob') {
+    fillPoly([[x - r - 6, hy + 26], [x - r - 4, hy - r], [x + r + 4, hy - r], [x + r + 6, hy + 26], [x + r, hy + 22], [x + r, hy - r * 0.3], [x - r, hy - r * 0.3], [x - r, hy + 22]], [40, 30, 24]);
+    fillCircle(x, hy - r * 0.2, r + 1, [40, 30, 24]);
+    face(x, hy + 2, r, skin, opts);
+    thickLine(x - r * 0.4, hy - r * 0.8, x - r * 0.3, hy - r * 0.2, 1.6, [110, 88, 62]);
+  } else {
+    for (let i = -3; i <= 3; i++) fillCircle(x + i * r * 0.28, hy - r * 0.82 + Math.abs(i) * r * 0.1, r * 0.26, [28, 22, 18]);
+    fillEllipse(x, hy - r * 0.55, r * 0.95, r * 0.5, [28, 22, 18]);
+  }
+}
+
+// ---------- LAYOUT ----------
+fillRect(0, 0, W, 10, NAVY); fillRect(0, H - 10, W, 10, NAVY);
+fillRect(0, 0, 10, H, NAVY); fillRect(W - 10, 0, 10, H, NAVY);
+fillRect(24, 24, W - 48, 2, NAVY);
+
+// MASTHEAD
+drawText('THE WORLD', 512, 36, 66, NAVY, 'c', 6, 0.17);
+drawText('IN ONE IMAGE', 512, 106, 19, RED, 'c', 8, 0.2);
+fillRect(180, 114, 130, 2, NAVY); fillRect(714, 114, 130, 2, NAVY);
+// DATELINE
+fillRect(30, 138, 964, 2, NAVY);
+drawText('SATURDAY, 21 NOVEMBER 2026', 512, 146, 21, INK, 'c', 3, 0.2);
+fillRect(30, 172, 964, 2, NAVY);
+
+// HEADLINE BAND
+fillRect(30, 180, 964, 76, NAVY);
+drawText('COP31 IN OVERTIME AS DRAFT', 512, 187, 30, CREAM, 'c', 1, 0.17);
+drawText('DROPS FOSSIL-FUEL PLEDGE', 512, 222, 30, [255, 214, 130], 'c', 1, 0.17);
+// SUBHEAD
+drawText('DEADLINE MISSED IN ANTALYA - NEW DRAFT DUE SATURDAY', 512, 264, 15, RED, 'c', 0.5, 0.22);
+drawText('$120BN A YEAR FOR ADAPTATION - NEARLY 200 NATIONS AT THE TABLE', 512, 284, 15, INK, 'c', 0.5, 0.22);
+
+// ---------- MAIN SCENE: COP31 HALL (Y 306..566) ----------
+fillRect(30, 306, 964, 260, [232, 214, 178]);
+fillRect(30, 540, 964, 26, [176, 132, 88]);
+function archedWindow(cx: number, top: number, w: number, h: number, mid: boolean): void {
+  const r = w / 2; const springY = top + r;
+  fillPoly([[cx - r, springY], [cx - r, top + h], [cx + r, top + h], [cx + r, springY]], [240, 178, 110]);
+  fillCircle(cx, springY, r, [240, 178, 110]);
+  fillRect(cx - r, springY + 40, w, 60, [226, 140, 82]);
+  fillRect(cx - r, springY + 100, w, 60, [214, 112, 66]);
+  if (mid) {
+    // DISTANT SKYLINE IS SKIPPED FOR THE MIDDLE WINDOW
+  } else {
+    fillRect(cx - r + 8, springY + 96, 22, 64, [120, 70, 55]);
+    fillRect(cx - r + 36, springY + 76, 18, 84, [140, 84, 62]);
+    fillRect(cx + r - 34, springY + 88, 26, 72, [120, 70, 55]);
+  }
+  thickLine(cx - r, springY, cx - r, top + h, 6, [90, 58, 36]);
+  thickLine(cx + r, springY, cx + r, top + h, 6, [90, 58, 36]);
+  thickLine(cx - r, top + h, cx + r, top + h, 6, [90, 58, 36]);
+  circleOutline(cx, springY, r, 6, [90, 58, 36]);
+  thickLine(cx, top + 2, cx, top + h, 5, [90, 58, 36]);
+  thickLine(cx - r, springY + 70, cx + r, springY + 70, 5, [90, 58, 36]);
+  if (mid) {
+    // WHOLE SUN, HIGH IN THE ARCH, CLEAR OF THE DELEGATES, DRAWN LAST
+    // SO NO MULLION CUTS THROUGH IT
+    fillCircle(cx, springY - 42, 30, [255, 205, 110]);
+    fillCircle(cx, springY - 42, 21, [255, 222, 138]);
+  }
+}
+archedWindow(196, 322, 150, 168, false);
+archedWindow(512, 322, 150, 168, true);
+archedWindow(828, 322, 150, 168, false);
+// BUNTING: 16 FLAGS
+const flagCols: RGB[] = [[178, 34, 34], [240, 196, 25], [46, 134, 193], [39, 174, 96], [230, 126, 34], [142, 68, 173], [22, 160, 133], [203, 67, 53]];
+for (let i = 0; i < 16; i++) {
+  const fx = 60 + i * 58;
+  const fy = 312 + Math.sin((i / 15) * Math.PI) * 10;
+  fillPoly([[fx, fy], [fx + 34, fy], [fx + 17, fy + 22]], flagCols[i % 8]);
+  if (i < 15) thinLine(fx + 34, fy, 60 + (i + 1) * 58, 312 + Math.sin(((i + 1) / 15) * Math.PI) * 10, [90, 58, 36]);
+}
+// WALL CLOCK, NEAR MIDNIGHT (11:58)
+fillCircle(352, 330, 25, [252, 248, 238]);
+circleOutline(352, 330, 25, 3, INK);
+for (let i = 0; i < 12; i++) {
+  const a = (i / 12) * Math.PI * 2;
+  fillCircle(352 + Math.sin(a) * 20, 330 - Math.cos(a) * 20, 1.6, INK);
+}
+thickLine(352, 330, 352 - 3, 330 - 13, 3, INK);
+thickLine(352, 330, 352 - 5, 330 - 19, 2.4, INK);
+fillCircle(352, 330, 2.6, RED);
+// OVERTIME BADGE, TOP RIGHT, WHOLE
+roundRect(838, 306, 156, 30, 6, RED);
+drawText('OVERTIME', 916, 312, 19, [255, 255, 255], 'c', 1, 0.22);
+// SIDE TABLE + GLOBE, RIGHT
+fillRect(852, 500, 118, 8, [122, 82, 46]);
+fillRect(860, 508, 8, 52, [96, 62, 34]); fillRect(954, 508, 8, 52, [96, 62, 34]);
+fillCircle(911, 468, 27, [46, 134, 193]);
+fillEllipse(902, 462, 12, 7, [39, 174, 96]); fillEllipse(918, 478, 9, 6, [39, 174, 96]); fillEllipse(912, 452, 6, 4, [39, 174, 96]);
+circleOutline(911, 468, 27, 2.5, NAVY);
+thickLine(911, 495, 911, 500, 3, NAVY);
+fillRect(894, 492, 34, 5, NAVY);
+// DELEGATES (5, DETAILED FACES)
+delegate(330, [38, 58, 92], [222, 178, 142], 'parted');
+delegate(420, [92, 38, 44], [198, 152, 118], 'grey', { glasses: true });
+delegate(512, [30, 70, 52], [232, 190, 152], 'bald', { beard: true });
+delegate(604, [70, 44, 84], [240, 200, 168], 'bob');
+delegate(694, [52, 52, 58], [210, 166, 130], 'curly');
+// ROUND TABLE
+fillEllipse(512, 512, 268, 40, [122, 82, 46]);
+fillRect(244, 512, 536, 44, [96, 62, 34]);
+fillEllipse(512, 556, 268, 14, [80, 50, 26]);
+// MICROPHONES + GLASSES ON THE TABLE
+for (const mx of [300, 400, 624, 724]) {
+  thickLine(mx, 512, mx, 492, 2.4, INK); fillCircle(mx, 488, 5, INK);
+}
+fillRect(452, 500, 10, 12, [200, 220, 230]); fillRect(566, 500, 10, 12, [200, 220, 230]);
+// DRAFT DOCUMENT, DRAWN AFTER THE TABLE SO IT SITS ON TOP OF IT,
+// FOSSIL FUELS CROSSED WITH ONE CLEAN LINE
+fillPoly([[468, 482], [548, 476], [556, 516], [476, 522]], [255, 255, 255]);
+drawText('DRAFT', 512, 480, 9, RED, 'c', 1, 0.22);
+drawText('FOSSIL FUELS', 512, 494, 10.5, INK, 'c', 0.5, 0.22);
+thickLine(474, 502, 550, 497, 3, RED);
+fillRect(478, 508, 66, 2, [160, 160, 160]); fillRect(478, 513, 52, 2, [160, 160, 160]);
+// CAPTION UNDER THE SCENE
+drawText('ANTALYA, TURKIYE - DELEGATES WAIT FOR A NEW DRAFT AS THE CLOCK NEARS MIDNIGHT', 512, 568, 12, [90, 80, 66], 'c', 0.5, 0.2);
+
+// ---------- SECONDARY ROW (Y 592..800) ----------
+fillRect(30, 588, 964, 2, NAVY);
+function thumbFrame(x: number, y: number, w: number, h: number): void {
+  fillRect(x - 2, y - 2, w + 4, h + 4, NAVY);
+}
+// --- THUMB 1: POLAND ---
+thumbFrame(30, 596, 310, 112);
+fillRect(30, 596, 310, 112, [214, 226, 238]);
+fillRect(30, 664, 310, 44, [96, 148, 74]);
+fillRect(30, 690, 310, 18, [74, 120, 58]);
+fillPoly([[52, 664], [52, 640], [88, 640], [88, 664]], [250, 248, 240]);
+fillPoly([[46, 642], [70, 622], [94, 642]], RED);
+fillRect(64, 650, 8, 14, NAVY);
+for (const px0 of [110, 128, 146]) {
+  fillPoly([[px0, 664], [px0 + 9, 630], [px0 + 18, 664]], [34, 96, 52]);
+  fillRect(px0 + 7, 664, 4, 6, [90, 58, 36]);
+}
+thickLine(300, 664, 300, 612, 3, INK);
+fillRect(300, 612, 30, 9, [255, 255, 255]); fillRect(300, 621, 30, 9, RED);
+fillEllipse(232, 690, 42, 12, [88, 66, 44]);
+fillEllipse(232, 688, 30, 8, [60, 44, 30]);
+thickLine(214, 700, 252, 648, 9, [150, 152, 155]);
+fillPoly([[252, 648], [262, 640], [258, 654]], [120, 122, 125]);
+fillPoly([[226, 678], [214, 668], [222, 684]], [120, 122, 125]);
+// POLAND SMOKE — RISING, SPREADING, FEATHERY (FIX B)
+polandSmoke(238, 668, 0.62);
+// --- THUMB 2: KYIV ---
+thumbFrame(357, 596, 310, 112);
+fillRect(357, 596, 310, 112, [226, 178, 128]);
+fillRect(357, 676, 310, 32, [70, 110, 150]);
+fillRect(357, 640, 60, 36, [96, 88, 96]); fillRect(417, 628, 52, 48, [110, 100, 108]);
+fillRect(600, 648, 44, 28, [250, 248, 240]);
+fillCircle(622, 640, 14, [212, 164, 52]);
+fillPoly([[622, 622], [626, 630], [622, 634], [618, 630]], [212, 164, 52]);
+thickLine(622, 620, 622, 610, 2, [212, 164, 52]); thickLine(616, 614, 628, 614, 2, [212, 164, 52]);
+thickLine(370, 668, 540, 668, 5, [60, 60, 66]);
+thickLine(400, 668, 420, 690, 4, [60, 60, 66]); thickLine(440, 668, 420, 690, 4, [60, 60, 66]);
+thickLine(470, 668, 480, 640, 5, [60, 60, 66]);
+thickLine(480, 640, 500, 668, 2.5, [60, 60, 66]);
+thickLine(500, 668, 520, 690, 4, [60, 60, 66]); thickLine(540, 668, 520, 690, 4, [60, 60, 66]);
+fillEllipse(420, 672, 16, 6, [230, 120, 40]); fillEllipse(420, 670, 9, 4, [250, 190, 60]);
+// KYIV SMOKE — ORGANIC, NO BUBBLE HIGHLIGHTS (FIX A)
+kyivSmoke(470, 632, 0.55);
+kyivSmoke(580, 640, 0.42);
+// --- THUMB 3: MARKETS ---
+thumbFrame(684, 596, 310, 112);
+fillRect(684, 596, 310, 112, [255, 255, 255]);
+fillRect(700, 610, 278, 2, [200, 200, 200]); fillRect(700, 610, 2, 84, [200, 200, 200]);
+const chart: [number, number][] = [[800, 622], [830, 634], [856, 628], [884, 652], [912, 646], [940, 672], [966, 690]];
+for (let i = 0; i + 1 < chart.length; i++) thickLine(chart[i][0], chart[i][1], chart[i + 1][0], chart[i + 1][1], 4, RED);
+for (const p of chart) fillCircle(p[0], p[1], 3.5, RED);
+drawText('S&P -3.7%', 700, 604, 15, RED, 'l', 0.5, 0.22);
+drawText('NASDAQ -5.3%', 852, 604, 13, INK, 'l', 0.5, 0.22);
+// COLUMN TEXT
+function column(x: number, kicker: string, head: string, b1: string, b2: string): void {
+  drawText(kicker, x, 716, 12, RED, 'l', 2, 0.22);
+  const hl = wrap(head, 310, 18, 0.5);
+  hl.forEach((ln, i) => drawText(ln, x, 734 + i * 21, 18, NAVY, 'l', 0.5, 0.2));
+  const by = 734 + hl.length * 21 + 4;
+  const l1 = wrap(b1, 310, 13, 0.3);
+  l1.forEach((ln, i) => drawText(ln, x, by + i * 16, 13, INK, 'l', 0.3, 0.22));
+  const by2 = by + l1.length * 16 + 2;
+  const l2 = wrap(b2, 310, 13, 0.3);
+  l2.forEach((ln, i) => drawText(ln, x, by2 + i * 16, 13, INK, 'l', 0.3, 0.22));
+}
+column(30, 'POLAND', 'RUSSIAN KH-101 FALLS IN POLAND', 'NATO CALLS IT A GRAVE VIOLATION', 'NO CASUALTIES REPORTED');
+column(357, 'KYIV', 'KYIV HIT BY 84 MISSILES', '404 DRONES, 3 DNIPRO BRIDGES HIT', 'POWER, HEAT, WATER CUT');
+column(684, 'MARKETS', 'AI SELL-OFF DRAGS US STOCKS DOWN', 'S&P -3.7% IN CORRECTION', 'NASDAQ -5.3% - NVDA -14%');
+
+// ---------- FOOTER: IN BRIEF ----------
+fillRect(30, 834, 964, 2, NAVY);
+drawText('IN BRIEF', 512, 844, 20, NAVY, 'c', 6, 0.2);
+fillRect(30, 870, 964, 1, [150, 140, 120]);
+function brief(x: number, title: string, body: string): void {
+  drawText(title, x, 882, 15, RED, 'l', 1, 0.22);
+  const ls = wrap(body, 226, 13, 0.3);
+  ls.forEach((ln, i) => drawText(ln, x, 904 + i * 17, 13, INK, 'l', 0.3, 0.22));
+}
+brief(30, 'CYCLONE AKVAN', '370,000 EVACUATED IN ODISHA. NO DEATHS.');
+brief(271, 'WORLD COURT', 'ACTION FOLLOWS MYANMAR RULING.');
+brief(512, 'FRANCE', 'SEEKS UN SECURITY COUNCIL MEETING ON KYIV.');
+brief(753, 'ESTONIA', 'TO CLOSE RUSSIAN BORDER FROM 1 DEC.');
+fillRect(30, 968, 964, 2, NAVY);
+drawText('THE WORLD - IN ONE IMAGE - 21 NOVEMBER 2026', 512, 978, 12, [90, 80, 66], 'c', 1, 0.2);
+
+// ---------- PNG ENCODE (DETERMINISTIC) ----------
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < b.length; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  }
   return (c ^ 0xffffffff) >>> 0;
 }
 function chunk(type: string, data: Buffer): Buffer {
   const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, "ascii");
+  out.writeUInt32BE(data.length, 0); out.write(type, 4, 'ascii');
   data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
+  const crc = crc32(Buffer.concat([Buffer.from(type, 'ascii'), data]));
+  out.writeUInt32BE(crc, 8 + data.length);
   return out;
 }
-function encodePNG(): Buffer {
-  // downsample 2x2 box average
-  const raw = Buffer.alloc(H * (1 + W * 4));
-  for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 4)] = 0;
-    for (let x = 0; x < W; x++) {
-      let r = 0, g = 0, b = 0, a = 0;
-      for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-        const i = ((y * 2 + dy) * W2 + (x * 2 + dx)) * 4;
-        r += buf[i]; g += buf[i + 1]; b += buf[i + 2]; a += buf[i + 3];
-      }
-      const o = y * (1 + W * 4) + 1 + x * 4;
-      raw[o] = Math.round(r / 4); raw[o + 1] = Math.round(g / 4); raw[o + 2] = Math.round(b / 4); raw[o + 3] = Math.round(a / 4);
-    }
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const idat = zlib.deflateSync(raw, { level: 6 });
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0)),
-  ]);
+const ihdr = Buffer.alloc(13);
+ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+const raw = Buffer.alloc(H * (1 + W * 3));
+for (let y = 0; y < H; y++) {
+  raw[y * (1 + W * 3)] = 0;
+  raw.set(fb.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
 }
-
-// ---------- scene helpers ----------
-function archWindow(x0: number, x1: number, yTop: number, yBot: number, sun: boolean): void {
-  const r = (x1 - x0) / 2, cx = (x0 + x1) / 2, cy = yTop + r;
-  const cols = ["#d95d2e", "#e5723a", "#e8854a", "#ec9a5e", "#f0ab70", "#f4bc82", "#eec27f", "#f2cf8f", "#f6dc9f", "#f9e6ae", "#fbeec0", "#fdf3cf"];
-  const n = cols.length;
-  for (let i = 0; i < n; i++) {
-    const ya = yTop + ((yBot - yTop) * i) / n, yb = yTop + ((yBot - yTop) * (i + 1)) / n;
-    for (let y = Math.floor(ya); y < Math.ceil(yb); y++) {
-      let hw: number;
-      if (y < cy) { const dy = cy - y; hw = Math.sqrt(Math.max(0, r * r - dy * dy)); } else hw = r;
-      fillRect(cx - hw, y, hw * 2, 1, rgb(cols[i]));
-    }
-  }
-  if (sun) {
-    circle(cx, 215, 38, rgb("#ffd970"));
-    circle(cx, 215, 30, rgb("#ffcf3d"));
-    circle(cx, 215, 24, rgb("#ffe27a"));
-  }
-  // frame: arch outline + sides + sill + mullions (kept clear of the sun)
-  const frame = rgb("#4a3220");
-  polyline(arcPts(cx, cy, r, Math.PI, 2 * Math.PI), 3, frame);
-  line(x0, cy, x0, yBot, 3, frame);
-  line(x1, cy, x1, yBot, 3, frame);
-  fillRect(x0 - 4, yBot, (x1 - x0) + 8, 6, frame);
-  line(cx - 45, yTop + 40, cx - 45, yBot, 2, frame);
-  line(cx + 45, yTop + 40, cx + 45, yBot, 2, frame);
-  line(x0, 252, x1, 252, 2, frame);
-}
-
-function drawDelegate(cx: number, hy: number, skin: string, hair: string, suit: string, style: string): void {
-  const SK = rgb(skin), HR = rgb(hair), SU = rgb(suit);
-  const DARK = rgb("#241d16");
-  // long back hair first
-  if (style === "long") {
-    polyFill([cx - 16, hy - 8, cx - 14, hy - 18, cx, hy - 21, cx + 14, hy - 18, cx + 16, hy - 8, cx + 19, hy + 34, cx + 10, hy + 34, cx + 12, hy + 4, cx - 12, hy + 4, cx - 10, hy + 34, cx - 19, hy + 34], HR);
-  }
-  // shoulders, shirt, tie
-  polyFill([cx - 36, hy + 54, cx - 27, hy + 18, cx + 27, hy + 18, cx + 36, hy + 54], SU);
-  polyFill([cx - 9, hy + 18, cx + 9, hy + 18, cx, hy + 42], rgb("#f2ede0"));
-  polyFill([cx - 3.5, hy + 22, cx + 3.5, hy + 22, cx + 4.5, hy + 44, cx, hy + 50, cx - 4.5, hy + 44], RED);
-  // neck + head + ears
-  fillRect(cx - 6, hy + 8, 12, 12, SK);
-  ellipse(cx, hy - 2, 15, 18, SK);
-  circle(cx - 15, hy, 3, SK); circle(cx + 15, hy, 3, SK);
-  // hair cap / styles
-  if (style === "sweep") {
-    polyFill([cx - 15, hy - 4, cx - 15, hy - 12, cx - 8, hy - 19, cx + 2, hy - 21, cx + 12, hy - 17, cx + 15, hy - 6, cx + 13, hy - 12, cx + 6, hy - 17, cx - 2, hy - 18, cx - 10, hy - 15, cx - 13, hy - 8], HR);
-    polyline([cx - 10, hy - 16, cx - 4, hy - 11, cx + 2, hy - 16], 1.6, rgb("#5a4632"));
-    polyline([cx - 6, hy - 13, cx - 6, hy - 8], 1.4, rgb("#5a4632"));
-    polyline([cx - 2, hy - 14, cx - 2, hy - 9], 1.4, rgb("#5a4632"));
-  } else if (style === "curls") {
-    const pts = arcPts(cx, hy - 2, 16, Math.PI * 1.08, Math.PI * 1.92, 0.28);
-    for (let i = 0; i < pts.length; i += 2) circle(pts[i], pts[i + 1], 4.2, HR);
-    circle(cx - 13, hy - 8, 4, HR); circle(cx + 13, hy - 8, 4, HR);
-  } else if (style === "fringe") {
-    polyFill([cx - 15, hy - 6, cx - 15, hy - 14, cx - 8, hy - 18, cx + 8, hy - 18, cx + 15, hy - 14, cx + 15, hy - 6, cx + 10, hy - 10, cx + 4, hy - 12, cx - 4, hy - 12, cx - 10, hy - 10], HR);
-  } else if (style === "long") {
-    polyFill([cx - 15, hy - 4, cx - 15, hy - 12, cx - 8, hy - 19, cx + 2, hy - 21, cx + 12, hy - 17, cx + 15, hy - 6, cx + 13, hy - 12, cx + 6, hy - 17, cx - 2, hy - 18, cx - 10, hy - 15, cx - 13, hy - 8], HR);
-    polyline([cx - 14, hy - 2, cx - 15, hy + 22], 2.5, HR);
-    polyline([cx + 14, hy - 2, cx + 15, hy + 22], 2.5, HR);
-  } else {
-    polyFill([cx - 15, hy - 4, cx - 15, hy - 12, cx - 8, hy - 19, cx + 2, hy - 21, cx + 12, hy - 17, cx + 15, hy - 6, cx + 13, hy - 12, cx + 6, hy - 17, cx - 2, hy - 18, cx - 10, hy - 15, cx - 13, hy - 8], HR);
-  }
-  // face: white eyes + dark pupils + highlights, brows, L nose, mouth
-  ellipse(cx - 6, hy - 4, 3, 2.2, rgb("#ffffff"));
-  ellipse(cx + 6, hy - 4, 3, 2.2, rgb("#ffffff"));
-  circle(cx - 6, hy - 4, 1.3, DARK); circle(cx + 6, hy - 4, 1.3, DARK);
-  circle(cx - 5.4, hy - 4.7, 0.6, rgb("#ffffff")); circle(cx + 6.6, hy - 4.7, 0.6, rgb("#ffffff"));
-  line(cx - 9.5, hy - 9, cx - 2.5, hy - 10, 1.4, DARK);
-  line(cx + 2.5, hy - 10, cx + 9.5, hy - 9, 1.4, DARK);
-  polyline([cx, hy - 2, cx, hy + 4, cx + 2.5, hy + 4], 1.3, DARK);
-  polyline([cx - 3.5, hy + 9, cx, hy + 10.5, cx + 3.5, hy + 9], 1.4, DARK);
-  if (style === "fringe") {
-    circle(cx - 6, hy - 4, 5.5, DARK); circle(cx + 6, hy - 4, 5.5, DARK);
-    circle(cx - 6, hy - 4, 4.4, SK); circle(cx + 6, hy - 4, 4.4, SK);
-    ellipse(cx - 6, hy - 4, 3, 2.2, rgb("#ffffff"));
-    ellipse(cx + 6, hy - 4, 3, 2.2, rgb("#ffffff"));
-    circle(cx - 6, hy - 4, 1.3, DARK); circle(cx + 6, hy - 4, 1.3, DARK);
-    line(cx - 11.5, hy - 4, cx - 0.5, hy - 4, 1.2, DARK);
-    line(cx - 11.5, hy - 4, cx - 15, hy - 6, 1.2, DARK);
-    line(cx + 11.5, hy - 4, cx + 15, hy - 6, 1.2, DARK);
-  }
-}
-
-// soft smoke: wide billowing column of overlapping round puffs, round wide top
-function smokeColumn(bx: number, by: number, puffs: [number, number, number][]): void {
-  const outer = rgb("#aab2bb"), mid = rgb("#c3c9cf"), inner = rgb("#dde1e4");
-  for (const [dx, dy, r] of puffs) {
-    circle(bx + dx, by + dy, r, outer);
-    circle(bx + dx + r * 0.12, by + dy - r * 0.1, r * 0.72, mid);
-    circle(bx + dx, by + dy - r * 0.18, r * 0.45, inner);
-  }
-}
-function flame(cx: number, by: number, h: number): void {
-  polyFill([cx - 5, by, cx - 4, by - h * 0.55, cx, by - h, cx + 4, by - h * 0.55, cx + 5, by], rgb("#e8722a"));
-  polyFill([cx - 2.6, by - 1, cx - 2, by - h * 0.5, cx, by - h * 0.72, cx + 2, by - h * 0.5, cx + 2.6, by - 1], rgb("#f2c230"));
-}
-function pine(cx: number, by: number, h: number): void {
-  const g = rgb("#2e5d33"), g2 = rgb("#3a7040"), tr = rgb("#5a3a22");
-  fillRect(cx - 2, by - 10, 4, 10, tr);
-  polyFill([cx - h * 0.32, by - 8, cx, by - h, cx + h * 0.32, by - 8], g);
-  polyFill([cx - h * 0.4, by - 2, cx, by - h * 0.62, cx + h * 0.4, by - 2], g2);
-  polyFill([cx - h * 0.46, by, cx, by - h * 0.3, cx + h * 0.46, by], g);
-}
-
-// ---------- compose ----------
-function draw(): void {
-  fillRect(0, 0, W, H, PAPER);
-
-  // ===== masthead =====
-  fillRect(24, 12, 976, 2, INK);
-  drawText("THE WORLD", 512, 20, 56, INK, { weight: 1.7, track: 1, align: "center" });
-  drawText("SATURDAY, 21 NOVEMBER 2026", 24, 88, 14, INK, { weight: 1.3 });
-  drawText("— ONE DAY, ONE PAGE —", 512, 88, 14, RED, { weight: 1.2, align: "center" });
-  drawText("IN ONE IMAGE", 1000, 88, 14, INK, { weight: 1.3, align: "right" });
-  fillRect(24, 110, 976, 2, INK);
-
-  // ===== lead scene: COP31 hall =====
-  const SX = 24, SY = 124, SW = 976, SH = 344;
-  fillRect(SX, SY, SW, SH, CREAM);
-  fillRect(SX, SY + 288, SW, SH - 288, rgb("#b99a6b"));
-  // bunting across the top (stops well short of the OVERTIME badge)
-  const buntingCols = ["#b3271e", "#1f4e79", "#2e6b34", "#c9a227"];
-  const bpts: number[] = [];
-  for (let i = 0; i <= 40; i++) {
-    const t = i / 40;
-    bpts.push(52 + t * 748, 138 + 14 * Math.sin(t * Math.PI));
-  }
-  polyline(bpts, 1.6, INK);
-  for (let i = 0; i < 14; i++) {
-    const t = (i + 0.5) / 14;
-    const fx = 52 + t * 748, fy = 138 + 14 * Math.sin(t * Math.PI);
-    polyFill([fx - 9, fy + 1, fx + 9, fy + 1, fx, fy + 17], rgb(buntingCols[i % 4]));
-  }
-  // wall clock — FAR LEFT, nowhere near the OVERTIME badge
-  circle(92, 208, 27, rgb("#3a2e22"));
-  circle(92, 208, 24, rgb("#fdfaf2"));
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2;
-    line(92 + 19 * Math.sin(a), 208 - 19 * Math.cos(a), 92 + 22 * Math.sin(a), 208 - 22 * Math.cos(a), 1.6, INK);
-  }
-  line(92, 208, 92 + 3, 208 - 13, 2.4, INK);      // hour hand, near 12
-  line(92, 208, 92 - 17, 208 - 11, 2, INK);       // minute hand, 11:55
-  circle(92, 208, 2.4, RED);
-  // OVERTIME badge — top RIGHT, alone, clear of clock and globe
-  roundRect(826, 132, 164, 30, 6, RED);
-  drawText("OVERTIME", 908, 139, 19, rgb("#ffffff"), { weight: 1.5, track: 0.5, align: "center" });
-  // arched windows with sunset + whole sun in the middle one
-  archWindow(120, 300, 176, 316, false);
-  archWindow(420, 600, 176, 316, true);
-  archWindow(720, 900, 176, 316, false);
-  // delegates behind the table
-  drawDelegate(150, 292, "#eab98c", "#2e2118", "#2b3a55", "sweep");
-  drawDelegate(320, 292, "#d9a06f", "#8a8a86", "#33302c", "curls");
-  drawDelegate(490, 292, "#eec39a", "#1d1712", "#1f4d4a", "fringe");
-  drawDelegate(660, 292, "#c98d5f", "#241d16", "#5c2e35", "neat");
-  drawDelegate(830, 292, "#e8b98d", "#3a2a1a", "#4a4a48", "long");
-  // long table
-  polyFill([50, 340, 900, 340, 920, 372, 30, 372], WOODL);
-  fillRect(30, 372, 890, 96, WOOD);
-  for (let i = 0; i < 9; i++) line(60 + i * 100, 380, 60 + i * 100, 464, 1.2, rgb("#5a3a1e"));
-  // DRAFT sheet on the table top, one clean strikethrough
-  polyFill([575, 342, 735, 342, 750, 370, 590, 370], rgb("#fdfaf2"));
-  drawText("DRAFT", 662, 346, 13, INK, { weight: 1.4, align: "center" });
-  line(592, 366, 740, 348, 2, RED);
-  line(600, 364, 700, 364, 1, rgb("#8a8a80"));
-  // microphones + name plates
-  for (const mx of [250, 490, 730]) {
-    line(mx, 368, mx, 336, 1.8, INK);
-    circle(mx, 333, 4.5, INK);
-    circle(mx, 333, 2, rgb("#666666"));
-  }
-  for (const nx of [150, 320, 490, 660, 830]) {
-    fillRect(nx - 24, 384, 48, 13, rgb("#fdfaf2"));
-    line(nx - 19, 390, nx + 19, 390, 1, rgb("#8a8a80"));
-  }
-  // side table + globe, far right and far below the badge
-  ellipse(950, 404, 42, 8, rgb("#3a2e22"));
-  fillRect(946, 404, 8, 58, rgb("#3a2e22"));
-  ellipse(950, 464, 26, 5, rgb("#3a2e22"));
-  circle(950, 380, 21, rgb("#2f6fb2"));
-  polyFill([934, 372, 942, 384, 940, 366, 934, 362, 940, 372, 950, 372, 958, 380, 966, 372, 962, 364, 956, 372], rgb("#3a8a4c"));
-  polyFill([944, 392, 962, 384, 966, 394, 952, 398], rgb("#3a8a4c"));
-  line(950, 401, 950, 394, 2, rgb("#c9a227"));
-  // scene frame
-  polyline([SX, SY, SX + SW, SY, SX + SW, SY + SH, SX, SY + SH, SX, SY], 2, INK);
-
-  // ===== lead headline + body =====
-  drawText("COP31 • ANTALYA — CLIMATE SUMMIT", 24, 478, 15, RED, { weight: 1.4, track: 0.5 });
-  drawText("CLIMATE TALKS RUN INTO OVERTIME", 24, 498, 42, INK, { weight: 1.6, track: 0.5 });
-  const leadBody = wrap("FRIDAY'S DEADLINE PASSED WITH NO DEAL. THE DRAFT DROPS FOSSIL-FUEL PLEDGES AND OFFERS $120BN A YEAR FOR ADAPTATION. NEARLY 200 NATIONS IN ANTALYA AWAIT A NEW TEXT ON SATURDAY.", 976, 16, 0.4);
-  leadBody.forEach((ln, i) => drawText(ln, 24, 548 + i * 20, 16, INK, { weight: 1.25, track: 0.4 }));
-  fillRect(24, 602, 976, 2, INK);
-
-  // ===== secondary stories =====
-  const cols = [
-    { x: 24, kick: "POLAND", head: "RUSSIAN MISSILE FALLS IN POLAND", body: "A KH-101 CAME DOWN AT NOWY LIPOWIEC. NATO CALLS IT A 'GRAVE VIOLATION'. NO ONE WAS HURT." },
-    { x: 352, kick: "UKRAINE", head: "84 MISSILES, 404 DRONES HIT KYIV", body: "THREE BRIDGES OVER THE DNIPRO DAMAGED. POWER, HEAT AND WATER CUT ACROSS KYIV." },
-    { x: 680, kick: "MARKETS", head: "AI SELL-OFF HITS U.S. STOCKS", body: "THE S&P 500 FELL 3.7% INTO CORRECTION. THE NASDAQ LOST 5.3%; NVIDIA FELL 14%." },
-  ];
-  for (const col of cols) {
-    drawText(col.kick, col.x, 612, 13, RED, { weight: 1.5, track: 0.5 });
-    const ox = col.x, oy = 632, tw = 320, th = 112;
-    if (col.kick === "POLAND") {
-      // concrete rural Poland: sky, farmhouse, pines, field, crater, missile, flag
-      fillRect(ox, oy, tw, 52, rgb("#cfd8de"));
-      polyFill([ox, oy + 40, ox + 120, oy + 28, ox + 240, oy + 38, ox + 320, oy + 30, ox + 320, oy + 52, ox, oy + 52], rgb("#8a9a7a"));
-      fillRect(ox + 18, oy + 34, 34, 18, rgb("#f2e6c8"));
-      polyFill([ox + 14, oy + 34, ox + 35, oy + 22, ox + 56, oy + 34], rgb("#a03a28"));
-      fillRect(ox + 30, oy + 40, 8, 8, rgb("#3a2e22"));
-      fillRect(ox, oy + 52, tw, 60, rgb("#5d8a3c"));
-      for (let i = 0; i < 5; i++) line(ox + 10 + i * 64, oy + 56, ox + 40 + i * 64, oy + 112, 1.4, rgb("#4c7530"));
-      pine(ox + 10, oy + 52, 30); pine(ox + 308, oy + 52, 34); pine(ox + 296, oy + 52, 22);
-      // crater
-      ellipse(ox + 165, oy + 92, 58, 15, rgb("#6b4a2f"));
-      ellipse(ox + 165, oy + 92, 44, 10, rgb("#4a2f1c"));
-      ellipse(ox + 165, oy + 88, 30, 6, rgb("#2e1c0e"));
-      for (const [dx, dy] of [[-52, -6], [-38, 4], [48, -4], [58, 2], [20, -10], [-14, 8]] as [number, number][]) {
-        circle(ox + 165 + dx, oy + 92 + dy, 2.2, rgb("#3a2412"));
-      }
-      // cruise missile, nose down-right into the crater
-      line(ox + 105, oy + 58, ox + 185, oy + 92, 17, rgb("#6e747c"));
-      line(ox + 105, oy + 58, ox + 185, oy + 92, 12, rgb("#b9bec4"));
-      polyFill([ox + 178, oy + 84, ox + 196, oy + 96, ox + 184, oy + 100], rgb("#8a8f96")); // nose cone
-      polyFill([ox + 126, oy + 66, ox + 142, oy + 46, ox + 138, oy + 72], rgb("#8a8f96")); // swept wing
-      polyFill([ox + 99, oy + 51, ox + 112, oy + 49, ox + 106, oy + 61], rgb("#5a5f66")); // tail fin
-      line(ox + 112, oy + 62, ox + 178, oy + 90, 1.2, rgb("#7a7f86"));
-      // smoke wisp rising from the crater, grey overlapping puffs
-      ellipse(ox + 168, oy + 76, 13, 8, rgb("#c9c9c9"));
-      ellipse(ox + 176, oy + 64, 11, 7, rgb("#c9c9c9"));
-      ellipse(ox + 168, oy + 54, 9, 6, rgb("#d6d6d6"));
-      // Polish flag on a pole
-      line(ox + 272, oy + 28, ox + 272, oy + 98, 2.2, rgb("#5a4632"));
-      polyFill([ox + 272, oy + 30, ox + 312, oy + 30, ox + 308, oy + 39, ox + 272, oy + 39], rgb("#ffffff"));
-      polyFill([ox + 272, oy + 39, ox + 308, oy + 39, ox + 312, oy + 48, ox + 272, oy + 48], rgb("#dc143c"));
-    } else if (col.kick === "UKRAINE") {
-      // Kyiv: dusk skyline, golden dome, river, broken bridge, soft smoke, calm flames
-      fillRect(ox, oy, tw, 112, rgb("#7a6a72"));
-      fillRect(ox, oy + 52, tw, 20, rgb("#d99a5e"));
-      const sky = rgb("#4a3a48");
-      fillRect(ox + 8, oy + 42, 26, 30, sky); fillRect(ox + 40, oy + 30, 20, 42, sky);
-      fillRect(ox + 96, oy + 38, 30, 34, sky); fillRect(ox + 200, oy + 34, 24, 38, sky);
-      fillRect(ox + 232, oy + 44, 34, 28, sky); fillRect(ox + 276, oy + 28, 22, 44, sky);
-      fillRect(ox + 62, oy + 46, 14, 26, rgb("#5a4a52"));
-      circle(ox + 69, oy + 42, 10, GOLD);
-      line(ox + 69, oy + 32, ox + 69, oy + 26, 1.6, GOLD);
-      fillRect(ox, oy + 88, tw, 24, rgb("#4a6a8a"));
-      line(ox + 10, oy + 96, ox + 310, oy + 96, 1.4, rgb("#7a9ab2"));
-      line(ox + 40, oy + 104, ox + 200, oy + 104, 1.2, rgb("#7a9ab2"));
-      // bridge: deck left + right, middle span collapsed in a V, leaning pylon, slack cables
-      line(ox + 10, oy + 78, ox + 140, oy + 78, 5, rgb("#e8e2d2"));
-      line(ox + 180, oy + 78, ox + 310, oy + 78, 5, rgb("#e8e2d2"));
-      line(ox + 140, oy + 78, ox + 160, oy + 100, 4, rgb("#c8bfa8"));
-      line(ox + 180, oy + 78, ox + 160, oy + 100, 4, rgb("#c8bfa8"));
-      line(ox + 140, oy + 78, ox + 128, oy + 30, 4, rgb("#8a7a68"));
-      polyline([ox + 128, oy + 30, ox + 138, oy + 52, ox + 140, oy + 78], 1.4, rgb("#a89a86"));
-      polyline([ox + 128, oy + 30, ox + 160, oy + 58, ox + 180, oy + 78], 1.4, rgb("#a89a86"));
-      // soft wide smoke columns — round overlapping puffs, wide rounded tops
-      smokeColumn(ox + 148, oy + 66, [[0, 0, 8], [-3, -10, 11], [3, -20, 13], [-2, -31, 15], [2, -42, 14]]);
-      smokeColumn(ox + 176, oy + 70, [[0, 0, 7], [2, -9, 10], [-2, -18, 12], [1, -28, 13]]);
-      // calm flames at the break
-      flame(ox + 152, oy + 82, 12);
-      flame(ox + 168, oy + 84, 10);
-    } else {
-      // markets: dark panel, grid, falling line, chips kept clear of the line
-      fillRect(ox, oy, tw, 112, rgb("#16233a"));
-      for (let i = 1; i < 5; i++) line(ox, oy + i * 22, ox + tw, oy + i * 22, 1, rgb("#2a3a55"));
-      for (let i = 1; i < 7; i++) line(ox + i * 46, oy, ox + i * 46, oy + 112, 1, rgb("#2a3a55"));
-      const bars = [26, 34, 30, 44, 38, 52, 60, 72];
-      bars.forEach((bh, i) => fillRect(ox + 14 + i * 38, oy + 112 - bh, 16, bh, i < 5 ? rgb("#3a5a8a") : rgb("#8a3a34")));
-      polyline([ox + 15, oy + 28, ox + 70, oy + 38, ox + 120, oy + 52, ox + 175, oy + 62, ox + 230, oy + 78, ox + 300, oy + 96], 3, rgb("#e05a4e"));
-      for (const [px, py] of [[15, 28], [70, 38], [120, 52], [175, 62], [230, 78], [300, 96]] as [number, number][]) circle(ox + px, oy + py, 2.6, rgb("#ff8a7a"));
-      roundRect(ox + 212, oy + 8, 100, 20, 4, rgb("#fdfaf2"));
-      drawText("S&P −3.7%", ox + 262, oy + 13, 12, RED, { weight: 1.5, align: "center" });
-      roundRect(ox + 8, oy + 88, 108, 18, 4, rgb("#fdfaf2"));
-      drawText("NASDAQ −5.3%", ox + 62, oy + 92, 11, INK, { weight: 1.4, align: "center" });
-      roundRect(ox + 128, oy + 90, 96, 18, 4, rgb("#fdfaf2"));
-      drawText("NVIDIA −14%", ox + 176, oy + 94, 11, INK, { weight: 1.4, align: "center" });
-    }
-    polyline([ox, oy, ox + tw, oy, ox + tw, oy + th, ox, oy + th, ox, oy], 1.6, INK);
-    const headLines = wrap(col.head, tw, 20, 0.3);
-    headLines.forEach((ln, i) => drawText(ln, ox, 754 + i * 24, 20, INK, { weight: 1.5, track: 0.3 }));
-    const bodyLines = wrap(col.body, tw, 13, 0.3);
-    bodyLines.forEach((ln, i) => drawText(ln, ox, 806 + i * 17, 13, INK, { weight: 1.25, track: 0.3 }));
-  }
-  fillRect(24, 852, 976, 2, INK);
-
-  // ===== footer: IN BRIEF =====
-  drawText("IN BRIEF", 24, 862, 16, RED, { weight: 1.5, track: 0.5 });
-  const briefs: [string, string][] = [
-    ["CYCLONE AKVAN", "370,000 FLED THE ODISHA COAST; NO DEATHS REPORTED."],
-    ["WORLD COURT", "STATES MOVE TO ACT AFTER THE COURT'S RULING ON MYANMAR."],
-    ["FRANCE", "PARIS SEEKS AN URGENT U.N. SECURITY COUNCIL MEETING ON KYIV."],
-    ["ESTONIA", "TALLINN WILL SHUT ITS BORDER WITH RUSSIA FROM 1 DECEMBER."],
-  ];
-  briefs.forEach(([lead, text], i) => {
-    const bx = 24 + i * 244;
-    drawText(lead, bx, 890, 13, INK, { weight: 1.6, track: 0.3 });
-    const lines = wrap(text, 232, 13, 0.3);
-    lines.forEach((ln, j) => drawText(ln, bx, 910 + j * 17, 13, INK, { weight: 1.2, track: 0.3 }));
-  });
-  fillRect(24, 968, 976, 1.5, INK);
-  drawText("THE WORLD — ONE DAY, ONE PAGE — SATURDAY, 21 NOVEMBER 2026", 512, 982, 11, rgb("#5a544a"), { weight: 1.1, align: "center" });
-}
-
-// ---------- main ----------
-function main(): void {
-  for (let i = 0; i < W2 * H2; i++) {
-    buf[i * 4] = PAPER[0]; buf[i * 4 + 1] = PAPER[1]; buf[i * 4 + 2] = PAPER[2]; buf[i * 4 + 3] = 255;
-  }
-  draw();
-  const png = encodePNG();
-  const outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, "entry.png"), png);
-  const sha = crypto.createHash("sha256").update(png).digest("hex");
-  const dossier = {
-    title: "THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026",
-    date: "2026-11-21",
-    width: W,
-    height: H,
-    bytes: png.length,
-    sha256: sha,
-  };
-  fs.writeFileSync(path.join(outDir, "dossier.json"), JSON.stringify(dossier, null, 2) + "\n");
-}
-
-main();
+const png = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  chunk('IHDR', ihdr),
+  chunk('IDAT', deflateSync(raw, { level: 9 })),
+  chunk('IEND', Buffer.alloc(0)),
+]);
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+mkdirSync(outDir, { recursive: true });
+writeFileSync(join(outDir, 'entry.png'), png);
