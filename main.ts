@@ -1,544 +1,794 @@
-// NEWS-IMAGE-20261121 V9 — FRESH BUILD
-// THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026
-// NODE 22 STDLIB ONLY, NO NETWORK, DETERMINISTIC.
-// ALL TEXT IS ALL CAPS: THE STROKE FONT BELOW ONLY HAS CAPITAL GLYPHS.
-// FIXES VS V8: (A) KYIV SMOKE IS ORGANIC IRREGULAR PUFFS, NO BRIGHT CIRCLE
-// HIGHLIGHTS, NO HARD CIRCLE OUTLINES; (B) POLAND SMOKE IS A RISING,
-// SPREADING, FEATHERY PLUME, DARK AT THE BASE, NEVER A NEAT EGG;
-// (C) DELEGATE 1 HAIR HAS A SHARP SIDE PART, UNEVEN STRANDS AND A
-// JAGGED, WAVY EDGE, NEVER ONE SMOOTH SOLID CAP.
+// news-image-20261121 v10 — "THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026"
+// Fresh procedural front page, 1024x1024, Node stdlib only (no network, no assets).
+// Own software rasteriser + 5x7 bitmap font + pure PNG encoder (zlib from stdlib).
+// Writes /output/entry.png (or $MAKEFUN_OUTPUT_DIR) + dossier.json. Deterministic.
+//
+// Facts (verified live, v1-v9): COP31 Antalya overtime Sat 21 Nov — Friday deadline
+// missed, draft drops fossil-fuel mention + $120bn/yr adaptation, ~200 nations, new
+// draft due Saturday. Kh-101 fell in Nowy Lipowiec, Poland (NATO "grave violation",
+// no casualties). Kyiv: 84 cruise missiles + 404 drones, 3 Dnipro bridges damaged,
+// power/heat/water cut. US AI sell-off: S&P -3.7% (correction), Nasdaq -5.3%,
+// NVIDIA -14%. IN BRIEF: Cyclone Akvan (370,000 flee Odisha, no deaths); World Court
+// acts after Myanmar ruling; France seeks UN Security Council session on Kyiv;
+// Estonia to shut Russia border from 1 Dec.
+//
+// v10 fixes vs v9: (a) second Kyiv smoke puff is anchored — a visible flame burns at
+// the bridge break point and a smoke column rises from it into the puff; (b) the sun
+// sits in the far-left window, well away from every delegate's head (no halo);
+// (c) the Poland missile is redrawn as a real missile — pointed nose, body, swept
+// wings, tail fins, nose-down into the crater; (d) markets body reads "NVIDIA -14%".
+
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 
+// ---------------------------------------------------------------- PNG encoder
+const CRC_TABLE: number[] = (() => {
+  const t: number[] = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t.push(c >>> 0);
+  }
+  return t;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function chunk(type: string, data: Buffer): Buffer {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
+  return out;
+}
+
+function encodePNG(w: number, h: number, rgba: Buffer): Buffer {
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0;
+    rgba.copy(raw, y * (w * 4 + 1) + 1, y * w * 4, (y + 1) * w * 4);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+// ---------------------------------------------------------------- rasteriser
 const W = 1024;
 const H = 1024;
-type RGB = [number, number, number];
-const NAVY: RGB = [22, 40, 63];
-const INK: RGB = [24, 28, 34];
-const RED: RGB = [178, 34, 34];
-const PAPER: RGB = [246, 241, 227];
-const CREAM: RGB = [252, 248, 238];
+const px = Buffer.alloc(W * H * 4);
 
-// ---------- FRAMEBUFFER ----------
-const fb = new Uint8Array(W * H * 3);
-for (let i = 0; i < W * H; i++) { fb[i * 3] = PAPER[0]; fb[i * 3 + 1] = PAPER[1]; fb[i * 3 + 2] = PAPER[2]; }
-function px(x: number, y: number, c: RGB): void {
-  const xi = Math.round(x); const yi = Math.round(y);
+type RGB = [number, number, number];
+const C = (hex: string): RGB => [
+  parseInt(hex.slice(1, 3), 16),
+  parseInt(hex.slice(3, 5), 16),
+  parseInt(hex.slice(5, 7), 16),
+];
+
+const PAPER = C('#f6f1e3');
+const INK = C('#1b1b1b');
+const RED = C('#b3261e');
+const BLUE = C('#1f4e79');
+const GOLD = C('#c9a227');
+const WALL = C('#ddd0b4');
+const FLOOR = C('#b08d63');
+
+for (let i = 0; i < W * H; i++) {
+  px[i * 4] = PAPER[0]; px[i * 4 + 1] = PAPER[1]; px[i * 4 + 2] = PAPER[2]; px[i * 4 + 3] = 255;
+}
+
+function setPx(x: number, y: number, c: RGB, a = 1): void {
+  const xi = Math.round(x);
+  const yi = Math.round(y);
   if (xi < 0 || yi < 0 || xi >= W || yi >= H) return;
-  const o = (yi * W + xi) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2];
+  const o = (yi * W + xi) * 4;
+  if (a >= 1) { px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255; return; }
+  px[o] = Math.round(px[o] * (1 - a) + c[0] * a);
+  px[o + 1] = Math.round(px[o + 1] * (1 - a) + c[1] * a);
+  px[o + 2] = Math.round(px[o + 2] * (1 - a) + c[2] * a);
 }
-function fillRect(x: number, y: number, w: number, h: number, c: RGB): void {
-  const x0 = Math.max(0, Math.round(x)); const y0 = Math.max(0, Math.round(y));
-  const x1 = Math.min(W, Math.round(x + w)); const y1 = Math.min(H, Math.round(y + h));
-  for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) {
-    const o = (yy * W + xx) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2];
+
+function fillRect(x: number, y: number, w: number, h: number, c: RGB, a = 1): void {
+  const x0 = Math.max(0, Math.floor(x));
+  const y0 = Math.max(0, Math.floor(y));
+  const x1 = Math.min(W, Math.ceil(x + w));
+  const y1 = Math.min(H, Math.ceil(y + h));
+  for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) setPx(xx, yy, c, a);
+}
+
+function circle(cx: number, cy: number, r: number, c: RGB, a = 1): void {
+  const r2 = r * r;
+  for (let yy = Math.floor(cy - r); yy <= Math.ceil(cy + r); yy++) {
+    for (let xx = Math.floor(cx - r); xx <= Math.ceil(cx + r); xx++) {
+      const dx = xx - cx;
+      const dy = yy - cy;
+      if (dx * dx + dy * dy <= r2) setPx(xx, yy, c, a);
+    }
   }
 }
-function fillCircle(cx: number, cy: number, r: number, c: RGB): void {
-  if (r <= 0) return;
-  const y0 = Math.max(0, Math.ceil(cy - r)); const y1 = Math.min(H - 1, Math.floor(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    const dy = (y - cy) / r; const dx = r * Math.sqrt(Math.max(0, 1 - dy * dy));
-    const x0 = Math.max(0, Math.ceil(cx - dx)); const x1 = Math.min(W - 1, Math.floor(cx + dx));
-    for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
+
+function ellipse(cx: number, cy: number, rx: number, ry: number, c: RGB, a = 1): void {
+  for (let yy = Math.floor(cy - ry); yy <= Math.ceil(cy + ry); yy++) {
+    for (let xx = Math.floor(cx - rx); xx <= Math.ceil(cx + rx); xx++) {
+      const dx = (xx - cx) / rx;
+      const dy = (yy - cy) / ry;
+      if (dx * dx + dy * dy <= 1) setPx(xx, yy, c, a);
+    }
   }
 }
-function fillEllipse(cx: number, cy: number, rx: number, ry: number, c: RGB): void {
-  if (rx <= 0 || ry <= 0) return;
-  const y0 = Math.max(0, Math.ceil(cy - ry)); const y1 = Math.min(H - 1, Math.floor(cy + ry));
-  for (let y = y0; y <= y1; y++) {
-    const dy = (y - cy) / ry; const dx = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
-    const x0 = Math.max(0, Math.ceil(cx - dx)); const x1 = Math.min(W - 1, Math.floor(cx + dx));
-    for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
-  }
-}
-function fillPoly(pts: [number, number][], c: RGB): void {
-  if (pts.length < 3) return;
-  let minY = H; let maxY = 0;
+
+function poly(pts: [number, number][], c: RGB, a = 1): void {
+  let minY = Infinity;
+  let maxY = -Infinity;
   for (const p of pts) { minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]); }
-  for (let y = Math.max(0, Math.ceil(minY)); y <= Math.min(H - 1, Math.floor(maxY)); y++) {
+  for (let y = Math.floor(minY); y <= Math.ceil(maxY); y++) {
     const xs: number[] = [];
     for (let i = 0; i < pts.length; i++) {
-      const a = pts[i]; const b = pts[(i + 1) % pts.length];
-      if ((a[1] <= y && b[1] > y) || (b[1] <= y && a[1] > y)) {
-        xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+      const [x0, y0] = pts[i];
+      const [x1, y1] = pts[(i + 1) % pts.length];
+      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+        xs.push(x0 + ((y - y0) / (y1 - y0)) * (x1 - x0));
       }
     }
-    xs.sort((m, n) => m - n);
+    xs.sort((p, q) => p - q);
     for (let k = 0; k + 1 < xs.length; k += 2) {
-      const x0 = Math.max(0, Math.ceil(xs[k])); const x1 = Math.min(W - 1, Math.floor(xs[k + 1]));
-      for (let x = x0; x <= x1; x++) { const o = (y * W + x) * 3; fb[o] = c[0]; fb[o + 1] = c[1]; fb[o + 2] = c[2]; }
+      for (let x = Math.ceil(xs[k]); x <= Math.floor(xs[k + 1]); x++) setPx(x, y, c, a);
     }
   }
-}
-function thickLine(x1: number, y1: number, x2: number, y2: number, w: number, c: RGB): void {
-  const d = Math.hypot(x2 - x1, y2 - y1);
-  const steps = Math.max(1, Math.ceil(d));
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    fillCircle(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, w / 2, c);
-  }
-}
-function thinLine(x1: number, y1: number, x2: number, y2: number, c: RGB): void {
-  const d = Math.hypot(x2 - x1, y2 - y1);
-  const steps = Math.max(1, Math.ceil(d * 2));
-  for (let i = 0; i <= steps; i++) { const t = i / steps; px(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, c); }
-}
-function circleOutline(cx: number, cy: number, r: number, w: number, c: RGB): void {
-  const steps = Math.max(24, Math.ceil(r * 6));
-  for (let i = 0; i < steps; i++) {
-    const a = (i / steps) * Math.PI * 2;
-    fillCircle(cx + Math.cos(a) * r, cy + Math.sin(a) * r, w / 2, c);
-  }
-}
-function roundRect(x: number, y: number, w: number, h: number, r: number, c: RGB): void {
-  fillRect(x + r, y, w - 2 * r, h, c); fillRect(x, y + r, w, h - 2 * r, c);
-  fillCircle(x + r, y + r, r, c); fillCircle(x + w - r, y + r, r, c);
-  fillCircle(x + r, y + h - r, r, c); fillCircle(x + w - r, y + h - r, r, c);
 }
 
-// ---------- STROKE FONT (CAPITALS ONLY) ----------
-// GLYPH GRID: X 0..6, Y 0..8 (TOP TO BOTTOM). EACH GLYPH IS A LIST OF POLYLINES.
-type Pt = [number, number];
-const G: Record<string, Pt[][]> = {
-  A: [[[0, 8], [3, 0], [6, 8]], [[1.6, 5.4], [4.4, 5.4]]],
-  B: [[[0, 0], [0, 8]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]], [[0, 4], [4, 4], [5, 5], [5, 7], [4, 8], [0, 8]]],
-  C: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 7], [1, 8], [4, 8], [5, 7]]],
-  D: [[[0, 0], [0, 8]], [[0, 0], [4, 0], [6, 2], [6, 6], [4, 8], [0, 8]]],
-  E: [[[5, 0], [0, 0], [0, 8], [5, 8]], [[0, 4], [4, 4]]],
-  F: [[[5, 0], [0, 0], [0, 8]], [[0, 4], [4, 4]]],
-  G: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 7], [1, 8], [4, 8], [5, 7], [5, 4], [3, 4]]],
-  H: [[[0, 0], [0, 8]], [[6, 0], [6, 8]], [[0, 4], [6, 4]]],
-  I: [[[3, 0], [3, 8]], [[1, 0], [5, 0]], [[1, 8], [5, 8]]],
-  J: [[[5, 0], [5, 7], [4, 8], [1, 8], [0, 7]]],
-  K: [[[0, 0], [0, 8]], [[5, 0], [0, 4], [5, 8]]],
-  L: [[[0, 0], [0, 8], [5, 8]]],
-  M: [[[0, 8], [0, 0], [3, 4.5], [6, 0], [6, 8]]],
-  N: [[[0, 8], [0, 0], [6, 8], [6, 0]]],
-  O: [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]]],
-  P: [[[0, 8], [0, 0]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]]],
-  Q: [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]], [[3.6, 5], [6, 8]]],
-  R: [[[0, 8], [0, 0]], [[0, 0], [4, 0], [5, 1], [5, 3], [4, 4], [0, 4]], [[3, 4], [6, 8]]],
-  S: [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 3], [1, 4], [4, 4], [5, 5], [5, 7], [4, 8], [1, 8], [0, 7]]],
-  T: [[[0, 0], [6, 0]], [[3, 0], [3, 8]]],
-  U: [[[0, 0], [0, 7], [1, 8], [5, 8], [6, 7], [6, 0]]],
-  V: [[[0, 0], [3, 8], [6, 0]]],
-  W: [[[0, 0], [1.5, 8], [3, 4], [4.5, 8], [6, 0]]],
-  X: [[[0, 0], [6, 8]], [[6, 0], [0, 8]]],
-  Y: [[[0, 0], [3, 4], [6, 0]], [[3, 4], [3, 8]]],
-  Z: [[[0, 0], [6, 0], [0, 8], [6, 8]]],
-  '0': [[[3, 0], [5, 1], [6, 3], [6, 5], [5, 7], [3, 8], [1, 7], [0, 5], [0, 3], [1, 1], [3, 0]]],
-  '1': [[[1.5, 1.5], [3, 0], [3, 8]], [[1, 8], [5, 8]]],
-  '2': [[[0, 1], [1, 0], [5, 0], [6, 1], [6, 3], [0, 8], [6, 8]]],
-  '3': [[[0, 0], [4, 0], [6, 2], [5, 4], [6, 6], [4, 8], [0, 8]]],
-  '4': [[[4, 0], [0, 6], [6, 6]], [[4, 0], [4, 8]]],
-  '5': [[[5, 0], [0, 0], [0, 4], [4, 4], [6, 6], [5, 8], [1, 8], [0, 7]]],
-  '6': [[[5, 1], [4, 0], [1, 0], [0, 2], [0, 7], [1, 8], [5, 8], [6, 7], [6, 5], [5, 4], [0, 4]]],
-  '7': [[[0, 0], [6, 0], [3, 8]]],
-  '8': [[[2, 0], [4, 0], [5, 1], [5, 3], [4, 4], [2, 4], [1, 3], [1, 1], [2, 0]], [[2, 4], [4, 4], [5, 5], [5, 7], [4, 8], [2, 8], [1, 7], [1, 5], [2, 4]]],
-  '9': [[[0, 7], [0, 3], [1, 1], [2, 0], [5, 0], [6, 1], [6, 5], [5, 6], [0, 6]], [[5, 6], [5, 8], [4, 8]]],
-  '-': [[[0.5, 4], [5.5, 4]]],
-  '—': [[[0, 4], [6, 4]]],
-  '/': [[[1, 8], [5, 0]]],
-  '(': [[[4, 0], [2, 2], [2, 6], [4, 8]]],
-  ')': [[[2, 0], [4, 2], [4, 6], [2, 8]]],
-  '+': [[[3, 1], [3, 7]], [[0, 4], [6, 4]]],
-  '=': [[[0, 3], [6, 3]], [[0, 5.5], [6, 5.5]]],
-  "'": [[[3, 0], [2.4, 2.4]]],
-  '!': [[[3, 0], [3, 5.5]]],
-  '?': [[[1, 1], [2, 0], [5, 0], [6, 1], [6, 3], [3, 5], [3, 6]]],
-  '$': [[[5, 1], [4, 0], [1, 0], [0, 1], [0, 3], [1, 4], [4, 4], [5, 5], [5, 7], [4, 8], [1, 8], [0, 7]], [[3, -0.6], [3, 8.6]]],
-};
-const WIDE: Record<string, number> = { I: 3.6, ' ': 4, '.': 3, ',': 3, ':': 3, ';': 3, '!': 3, '?': 6, '%': 7, '(': 4, ')': 4, "'": 3, '-': 6, '—': 7.5, '/': 6, '+': 6, '=': 6, '$': 6 };
-function charW(ch: string, size: number, track: number): number {
-  const u = size / 8;
-  const wu = WIDE[ch] ?? 6;
-  return (wu + 1.4) * u + track;
-}
-function textW(s: string, size: number, track: number): number {
-  let w = 0; for (const ch of s) w += charW(ch, size, track); return w - track;
-}
-function drawGlyph(ch: string, x: number, yTop: number, size: number, sw: number, c: RGB): void {
-  const u = size / 8;
-  if (ch === ' ') return;
-  if (ch === '.' || ch === '•') { fillCircle(x + 3 * u, yTop + 7.4 * u, Math.max(1.4, sw * 0.62), c); return; }
-  if (ch === ',') { fillCircle(x + 3 * u, yTop + 7.4 * u, Math.max(1.4, sw * 0.62), c); thickLine(x + 3 * u, yTop + 7.6 * u, x + 1.8 * u, yTop + 9 * u, sw * 0.8, c); return; }
-  if (ch === ':') { fillCircle(x + 3 * u, yTop + 2.4 * u, Math.max(1.3, sw * 0.55), c); fillCircle(x + 3 * u, yTop + 6.8 * u, Math.max(1.3, sw * 0.55), c); return; }
-  if (ch === ';') { fillCircle(x + 3 * u, yTop + 2.4 * u, Math.max(1.3, sw * 0.55), c); fillCircle(x + 3 * u, yTop + 6.8 * u, Math.max(1.3, sw * 0.55), c); thickLine(x + 3 * u, yTop + 7 * u, x + 1.8 * u, yTop + 9 * u, sw * 0.8, c); return; }
-  if (ch === '!') { thickLine(x + 3 * u, yTop + 0.2 * u, x + 3 * u, yTop + 5.2 * u, sw, c); fillCircle(x + 3 * u, yTop + 7.2 * u, Math.max(1.3, sw * 0.55), c); return; }
-  if (ch === '%') {
-    circleOutline(x + 1.9 * u, yTop + 1.9 * u, 1.35 * u, Math.max(1.2, sw * 0.8), c);
-    circleOutline(x + 4.6 * u, yTop + 6.1 * u, 1.35 * u, Math.max(1.2, sw * 0.8), c);
-    thickLine(x + 5.4 * u, yTop + 0.4 * u, x + 1.2 * u, yTop + 7.6 * u, sw * 0.85, c);
-    return;
+function line(x0: number, y0: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy);
+  const steps = Math.max(1, Math.ceil(len));
+  for (let i = 0; i <= steps; i++) {
+    circle(x0 + (dx * i) / steps, y0 + (dy * i) / steps, w / 2, c, a);
   }
-  const glyph = G[ch]; if (!glyph) return;
-  for (const line of glyph) {
-    if (line.length === 1) { fillCircle(x + line[0][0] * u, yTop + line[0][1] * u, sw / 2, c); continue; }
-    for (let i = 0; i + 1 < line.length; i++) {
-      thickLine(x + line[i][0] * u, yTop + line[i][1] * u, x + line[i + 1][0] * u, yTop + line[i + 1][1] * u, sw, c);
+}
+
+function polyOutline(pts: [number, number][], w: number, c: RGB): void {
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[(i + 1) % pts.length];
+    line(x0, y0, x1, y1, w, c);
+  }
+}
+
+function rrect(x: number, y: number, w: number, h: number, r: number, c: RGB, a = 1): void {
+  fillRect(x + r, y, w - 2 * r, h, c, a);
+  fillRect(x, y + r, w, h - 2 * r, c, a);
+  circle(x + r, y + r, r, c, a);
+  circle(x + w - r, y + r, r, c, a);
+  circle(x + r, y + h - r, r, c, a);
+  circle(x + w - r, y + h - r, r, c, a);
+}
+
+// ---------------------------------------------------------------- 5x7 font
+// Rows are 5 bits wide, top to bottom. Lowercase included for mixed-case body text.
+const FONT: Record<string, string[]> = {
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
+  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+  W: ['10001', '10001', '10001', '10101', '10101', '10101', '01010'],
+  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+  a: ['00000', '00000', '01110', '00001', '01111', '10001', '01111'],
+  b: ['10000', '10000', '11110', '10001', '10001', '10001', '11110'],
+  c: ['00000', '00000', '01110', '10000', '10000', '10001', '01110'],
+  d: ['00001', '00001', '01111', '10001', '10001', '10001', '01111'],
+  e: ['00000', '00000', '01110', '10001', '11111', '10000', '01110'],
+  f: ['00110', '01001', '01000', '11110', '01000', '01000', '01000'],
+  g: ['00000', '01111', '10001', '10001', '01111', '00001', '01110'],
+  h: ['10000', '10000', '11110', '10001', '10001', '10001', '10001'],
+  i: ['00100', '00000', '01100', '00100', '00100', '00100', '01110'],
+  j: ['00010', '00000', '00110', '00010', '00010', '10010', '01100'],
+  k: ['10000', '10000', '10010', '10100', '11000', '10100', '10010'],
+  l: ['01100', '00100', '00100', '00100', '00100', '00100', '01110'],
+  m: ['00000', '00000', '11010', '10101', '10101', '10101', '10101'],
+  n: ['00000', '00000', '11110', '10001', '10001', '10001', '10001'],
+  o: ['00000', '00000', '01110', '10001', '10001', '10001', '01110'],
+  p: ['00000', '00000', '11110', '10001', '11110', '10000', '10000'],
+  q: ['00000', '00000', '01111', '10001', '10001', '01111', '00001'],
+  r: ['00000', '00000', '10110', '11001', '10000', '10000', '10000'],
+  s: ['00000', '00000', '01111', '10000', '01110', '00001', '11110'],
+  t: ['01000', '01000', '11100', '01000', '01000', '01000', '00110'],
+  u: ['00000', '00000', '10001', '10001', '10001', '10011', '01101'],
+  v: ['00000', '00000', '10001', '10001', '10001', '01010', '00100'],
+  w: ['00000', '00000', '10001', '10101', '10101', '10101', '01010'],
+  x: ['00000', '00000', '10001', '01010', '00100', '01010', '10001'],
+  y: ['00000', '00000', '10001', '10001', '01111', '00001', '01110'],
+  z: ['00000', '00000', '11111', '00010', '00100', '01000', '11111'],
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
+  '.': ['00000', '00000', '00000', '00000', '00000', '01100', '01100'],
+  ',': ['00000', '00000', '00000', '00000', '01100', '00100', '01000'],
+  '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
+  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
+  "'": ['00100', '00100', '01000', '00000', '00000', '00000', '00000'],
+  '"': ['01010', '01010', '01010', '00000', '00000', '00000', '00000'],
+  '-': ['00000', '00000', '00000', '01110', '00000', '00000', '00000'],
+  '–': ['00000', '00000', '00000', '01110', '00000', '00000', '00000'],
+  '—': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  '(': ['00010', '00100', '01000', '01000', '01000', '00100', '00010'],
+  ')': ['01000', '00100', '00010', '00010', '00010', '00100', '01000'],
+  '%': ['11001', '11010', '00010', '00100', '01000', '01011', '10011'],
+  '&': ['01100', '10010', '10100', '01000', '10101', '10010', '01101'],
+  $: ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
+  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+  '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
+  '=': ['00000', '00000', '11111', '00000', '11111', '00000', '00000'],
+  ':': ['00000', '01100', '01100', '00000', '01100', '01100', '00000'],
+  ';': ['00000', '01100', '01100', '00000', '01100', '00100', '01000'],
+  '•': ['00000', '00000', '01100', '01100', '01100', '00000', '00000'],
+  '~': ['00000', '00000', '01001', '10110', '00000', '00000', '00000'],
+};
+
+function textWidth(s: string, scale: number, tracking = 0): number {
+  if (s.length === 0) return 0;
+  return s.length * (6 * scale + tracking) - tracking;
+}
+
+function drawText(
+  s: string,
+  x: number,
+  y: number,
+  scale: number,
+  c: RGB,
+  opts: { bold?: boolean; align?: 'left' | 'center' | 'right'; tracking?: number } = {},
+): void {
+  const tracking = opts.tracking ?? 0;
+  const w = textWidth(s, scale, tracking);
+  let cx = x;
+  if (opts.align === 'center') cx = x - w / 2;
+  if (opts.align === 'right') cx = x - w;
+  const boldDx = opts.bold ? (scale >= 5 ? 2 : 1) : 0;
+  for (let i = 0; i < s.length; i++) {
+    const g = FONT[s[i]];
+    if (!g) continue;
+    const gx = cx + i * (6 * scale + tracking);
+    for (let r = 0; r < 7; r++) {
+      for (let col = 0; col < 5; col++) {
+        if (g[r][col] === '1') {
+          fillRect(gx + col * scale, y + r * scale, scale, scale, c);
+          if (boldDx) fillRect(gx + col * scale + boldDx, y + r * scale, scale, scale, c);
+        }
+      }
     }
   }
 }
-function drawText(s: string, x: number, yTop: number, size: number, c: RGB, align: 'l' | 'c' | 'r' = 'l', track = 0, swMul = 0.19): void {
-  const w = textW(s, size, track);
-  let cx = x; if (align === 'c') cx = x - w / 2; if (align === 'r') cx = x - w;
-  const sw = Math.max(1.1, size * swMul);
-  let cur = cx;
-  for (const ch of s) { drawGlyph(ch, cur, yTop, size, sw, c); cur += charW(ch, size, track); }
-}
-function wrap(s: string, maxW: number, size: number, track = 0): string[] {
-  const words = s.split(' '); const lines: string[] = []; let cur = '';
-  for (const wd of words) {
-    const t = cur ? cur + ' ' + wd : wd;
-    if (textW(t, size, track) <= maxW || !cur) cur = t;
-    else { lines.push(cur); cur = wd; }
+
+function wrapText(s: string, maxPx: number, scale: number, tracking = 0): string[] {
+  const words = s.split(' ');
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    const trial = cur ? cur + ' ' + w : w;
+    if (textWidth(trial, scale, tracking) <= maxPx || !cur) cur = trial;
+    else { lines.push(cur); cur = w; }
   }
   if (cur) lines.push(cur);
   return lines;
 }
 
-// ---------- ORGANIC SMOKE (FIX A + B) ----------
-// KYIV: OVERLAPPING IRREGULAR BLOBS IN VARIED GREYS, NO BRIGHT CIRCLE
-// HIGHLIGHT, NO HARD CIRCLE OUTLINE.
-function kyivSmoke(cx: number, cy: number, s: number): void {
-  const g1: RGB = [88, 84, 80]; const g2: RGB = [112, 108, 103]; const g3: RGB = [138, 134, 128]; const g4: RGB = [164, 160, 153];
-  fillEllipse(cx, cy + 6 * s, 26 * s, 13 * s, g1);
-  fillEllipse(cx - 16 * s, cy + 2 * s, 18 * s, 11 * s, g2);
-  fillEllipse(cx + 15 * s, cy + 3 * s, 19 * s, 12 * s, g2);
-  fillEllipse(cx - 6 * s, cy - 6 * s, 20 * s, 12 * s, g3);
-  fillEllipse(cx + 12 * s, cy - 8 * s, 15 * s, 10 * s, g3);
-  fillEllipse(cx - 20 * s, cy - 5 * s, 11 * s, 8 * s, g4);
-  fillEllipse(cx + 2 * s, cy - 13 * s, 14 * s, 8 * s, g4);
-  fillEllipse(cx + 22 * s, cy - 11 * s, 9 * s, 6 * s, g4);
-  fillEllipse(cx - 2 * s, cy - 18 * s, 9 * s, 5 * s, g3);
-  fillEllipse(cx + 10 * s, cy - 17 * s, 7 * s, 4.5 * s, g4);
-  thickLine(cx - 24 * s, cy - 8 * s, cx - 34 * s, cy - 16 * s, 3.5 * s, g3);
-  thickLine(cx + 24 * s, cy - 10 * s, cx + 33 * s, cy - 19 * s, 3 * s, g4);
-  thickLine(cx + 4 * s, cy - 19 * s, cx + 8 * s, cy - 27 * s, 2.6 * s, g3);
-}
-// POLAND: RISING PLUME, WIDENS AND SPREADS UPWARD, DARK AT BASE,
-// FEATHERY RAGGED TOP. NEVER A NEAT EGG.
-function polandSmoke(bx: number, by: number, s: number): void {
-  const d: RGB = [74, 72, 70]; const m: RGB = [104, 102, 99]; const l: RGB = [134, 132, 128]; const p: RGB = [164, 161, 156];
-  fillEllipse(bx, by, 22 * s, 9 * s, d);
-  fillEllipse(bx - 8 * s, by - 9 * s, 24 * s, 11 * s, d);
-  fillEllipse(bx + 10 * s, by - 10 * s, 26 * s, 12 * s, m);
-  fillEllipse(bx - 16 * s, by - 20 * s, 28 * s, 13 * s, m);
-  fillEllipse(bx + 14 * s, by - 22 * s, 30 * s, 13 * s, l);
-  fillEllipse(bx - 4 * s, by - 32 * s, 30 * s, 13 * s, l);
-  fillEllipse(bx + 20 * s, by - 33 * s, 20 * s, 10 * s, p);
-  fillEllipse(bx - 26 * s, by - 30 * s, 16 * s, 9 * s, p);
-  fillEllipse(bx - 30 * s, by - 40 * s, 8 * s, 5 * s, p);
-  fillEllipse(bx - 12 * s, by - 44 * s, 9 * s, 5 * s, l);
-  fillEllipse(bx + 6 * s, by - 45 * s, 8 * s, 5 * s, p);
-  fillEllipse(bx + 24 * s, by - 42 * s, 9 * s, 5 * s, l);
-  fillEllipse(bx + 36 * s, by - 36 * s, 7 * s, 4 * s, p);
-  thickLine(bx - 34 * s, by - 34 * s, bx - 44 * s, by - 44 * s, 3 * s, l);
-  thickLine(bx + 30 * s, by - 38 * s, bx + 40 * s, by - 48 * s, 2.6 * s, p);
-  thickLine(bx + 2 * s, by - 44 * s, bx + 0 * s, by - 54 * s, 2.4 * s, p);
+// ---------------------------------------------------------------- scene bits
+function flame(cx: number, baseY: number, s: number): void {
+  // Teardrop flame: orange outer, yellow core, red glow underneath.
+  circle(cx, baseY - 2, 11 * s, C('#e8641c'), 0.35);
+  poly(
+    [
+      [cx - 7 * s, baseY],
+      [cx - 9 * s, baseY - 9 * s],
+      [cx - 3 * s, baseY - 16 * s],
+      [cx + 2 * s, baseY - 20 * s],
+      [cx + 6 * s, baseY - 10 * s],
+      [cx + 7 * s, baseY],
+    ],
+    C('#e8641c'),
+  );
+  poly(
+    [
+      [cx - 3.5 * s, baseY],
+      [cx - 4 * s, baseY - 6 * s],
+      [cx, baseY - 11 * s],
+      [cx + 3.5 * s, baseY - 5 * s],
+      [cx + 3 * s, baseY],
+    ],
+    C('#f5c542'),
+  );
 }
 
-// ---------- DELEGATES ----------
-// FIX C: DELEGATE 1 HAIR — SHARP SIDE PART, UNEVEN STRANDS, JAGGED WAVY
-// LOWER EDGE, NEVER ONE SMOOTH SOLID CAP.
-function hairParted(cx: number, cy: number, r: number, col: RGB, light: RGB): void {
-  const edge: [number, number][] = [];
-  const n = 15;
-  for (let i = 0; i <= n; i++) {
-    const a = Math.PI + (i / n) * Math.PI;
-    const rr = r * (1 + (i % 2 === 0 ? 0.02 : -0.06));
-    edge.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.92 - r * 0.06]);
+function smokePuff(cx: number, cy: number, s: number, c: RGB, a: number): void {
+  // Organic cluster of overlapping circles, uneven edges.
+  circle(cx, cy, 13 * s, c, a);
+  circle(cx - 11 * s, cy + 3 * s, 10 * s, c, a);
+  circle(cx + 11 * s, cy + 4 * s, 9 * s, c, a);
+  circle(cx - 4 * s, cy - 9 * s, 9 * s, c, a);
+  circle(cx + 6 * s, cy - 8 * s, 8 * s, c, a);
+  circle(cx - 15 * s, cy - 4 * s, 6 * s, c, a);
+  circle(cx + 16 * s, cy - 3 * s, 6 * s, c, a);
+}
+
+function delegate(
+  cx: number,
+  headY: number,
+  skin: RGB,
+  hair: RGB,
+  suit: RGB,
+  tie: RGB,
+  style: 'textured' | 'glasses' | 'bun' | 'beard' | 'grey',
+): void {
+  // Body (table will cover the lower part).
+  poly(
+    [
+      [cx - 52, headY + 62],
+      [cx - 40, headY + 24],
+      [cx + 40, headY + 24],
+      [cx + 52, headY + 62],
+    ],
+    suit,
+  );
+  // Shirt + tie.
+  poly([[cx - 12, headY + 26], [cx + 12, headY + 26], [cx, headY + 58]], C('#f2ede0'));
+  poly(
+    [[cx - 4, headY + 28], [cx + 4, headY + 28], [cx + 6, headY + 46], [cx, headY + 56], [cx - 6, headY + 46]],
+    tie,
+  );
+  // Ears.
+  circle(cx - 25, headY, 5, skin);
+  circle(cx + 25, headY, 5, skin);
+  // Head.
+  circle(cx, headY, 25, skin);
+  // Hair cap.
+  if (style === 'bun') {
+    circle(cx, headY - 24, 9, hair);
+    poly([[cx - 25, headY - 2], [cx - 24, headY - 18], [cx - 12, headY - 25], [cx + 12, headY - 25], [cx + 24, headY - 18], [cx + 25, headY - 2]], hair);
+  } else if (style === 'grey') {
+    poly([[cx - 25, headY - 2], [cx - 24, headY - 16], [cx - 12, headY - 24], [cx + 12, headY - 24], [cx + 24, headY - 16], [cx + 25, headY - 2]], hair);
+  } else {
+    poly([[cx - 25, headY - 4], [cx - 25, headY - 14], [cx - 14, headY - 25], [cx + 14, headY - 25], [cx + 25, headY - 14], [cx + 25, headY - 4]], hair);
   }
-  const fringe: [number, number][] = [];
-  for (let i = 0; i <= 10; i++) {
-    const fx = cx - r + (i / 10) * 2 * r;
-    const fy = cy - r * 0.28 + (i % 2 === 0 ? 0 : r * 0.22) + (i / 10) * r * 0.18;
-    fringe.push([fx, fy]);
+  if (style === 'textured') {
+    // Textured hair: darker stipple dots + short strokes on the cap.
+    const dk = C('#1a1a1a');
+    circle(cx - 14, headY - 18, 2, dk);
+    circle(cx - 4, headY - 22, 2, dk);
+    circle(cx + 8, headY - 20, 2, dk);
+    circle(cx + 16, headY - 14, 2, dk);
+    circle(cx - 19, headY - 10, 2, dk);
+    line(cx - 10, headY - 12, cx - 2, headY - 16, 2, dk);
+    line(cx + 2, headY - 14, cx + 12, headY - 18, 2, dk);
   }
-  fillPoly([...edge, ...fringe.reverse()], col);
-  thickLine(cx - r * 0.34, cy - r * 0.92, cx - r * 0.18, cy - r * 0.12, 2.2, light);
-  const strands: [number, number, number, number][] = [
-    [-0.62, -0.72, -0.78, -0.05], [-0.42, -0.80, -0.52, -0.02], [-0.20, -0.86, -0.22, 0.02],
-    [0.02, -0.88, 0.10, -0.06], [0.24, -0.84, 0.38, -0.10], [0.46, -0.76, 0.66, -0.14],
-    [0.64, -0.62, 0.82, -0.22], [-0.72, -0.55, -0.88, 0.02], [0.30, -0.70, 0.44, 0.06],
+  if (style === 'beard') {
+    // Beard along the jaw.
+    ellipse(cx, headY + 14, 17, 12, hair);
+    circle(cx, headY + 6, 17, skin);
+  }
+  // Brows, eyes, nose, mouth.
+  line(cx - 13, headY - 8, cx - 5, headY - 9, 2, INK);
+  line(cx + 5, headY - 9, cx + 13, headY - 8, 2, INK);
+  circle(cx - 9, headY - 2, 2, INK);
+  circle(cx + 9, headY - 2, 2, INK);
+  line(cx, headY + 2, cx - 1, headY + 9, 2, C('#a06a45'));
+  line(cx - 6, headY + 14, cx + 6, headY + 14, 2, C('#7a3b2e'));
+  if (style === 'glasses') {
+    circle(cx - 9, headY - 2, 6, INK, 0.9);
+    circle(cx - 9, headY - 2, 4, skin);
+    circle(cx - 9, headY - 2, 2, INK);
+    circle(cx + 9, headY - 2, 6, INK, 0.9);
+    circle(cx + 9, headY - 2, 4, skin);
+    circle(cx + 9, headY - 2, 2, INK);
+    line(cx - 3, headY - 2, cx + 3, headY - 2, 2, INK);
+    line(cx - 15, headY - 2, cx - 24, headY - 4, 2, INK);
+    line(cx + 15, headY - 2, cx + 24, headY - 4, 2, INK);
+  }
+}
+
+// ---------------------------------------------------------------- lead scene
+function drawLead(): void {
+  // Wall + floor.
+  fillRect(16, 150, 992, 342, WALL);
+  fillRect(16, 440, 992, 52, FLOOR);
+  line(16, 440, 1008, 440, 2, C('#8a6f4d'));
+  // Border.
+  polyOutline([[16, 150], [1008, 150], [1008, 492], [16, 492]], 2, INK);
+
+  // Bunting: 16 flags across the top.
+  line(20, 158, 1004, 158, 2, INK);
+  const flagCols = [RED, C('#f2ede0'), BLUE, GOLD, C('#2e6b34')];
+  for (let i = 0; i < 16; i++) {
+    const cx = 32 + i * 62;
+    poly([[cx - 17, 158], [cx + 17, 158], [cx, 182]], flagCols[i % 5]);
+    line(cx - 17, 158, cx + 17, 158, 1, INK);
+  }
+
+  // Three arched windows.
+  const winCx = [200, 512, 824];
+  const winSky = [C('#f6b95e'), C('#e8a35c'), C('#f2c078')];
+  for (let k = 0; k < 3; k++) {
+    const cx = winCx[k];
+    // Frame arch.
+    circle(cx, 265, 80, C('#6b4f2e'));
+    fillRect(cx - 80, 265, 160, 120, C('#6b4f2e'));
+    // Sky arch.
+    circle(cx, 265, 72, winSky[k]);
+    fillRect(cx - 72, 265, 144, 120, winSky[k]);
+    if (k === 1) {
+      // Distant skyline in the middle window.
+      fillRect(cx - 72, 330, 144, 55, C('#7a5a3a'));
+      fillRect(cx - 60, 312, 22, 73, C('#5d4630'));
+      fillRect(cx - 28, 322, 18, 63, C('#5d4630'));
+      fillRect(cx + 2, 306, 24, 79, C('#5d4630'));
+      fillRect(cx + 36, 320, 20, 65, C('#5d4630'));
+    }
+    if (k === 2) {
+      // Clouds + birds in the right window.
+      ellipse(cx - 28, 240, 26, 10, C('#fdf6e3'), 0.9);
+      ellipse(cx + 24, 300, 30, 11, C('#fdf6e3'), 0.9);
+      line(cx - 40, 220, cx - 34, 216, 2, INK);
+      line(cx - 34, 216, cx - 28, 220, 2, INK);
+      line(cx + 30, 250, cx + 36, 246, 2, INK);
+      line(cx + 36, 246, cx + 42, 250, 2, INK);
+    }
+    // Mullions + sill.
+    line(cx, 193, cx, 385, 4, C('#6b4f2e'));
+    line(cx - 72, 300, cx + 72, 300, 4, C('#6b4f2e'));
+    fillRect(cx - 84, 385, 168, 10, C('#6b4f2e'));
+  }
+
+  // (b) Sun — WHOLE circle, in the FAR-LEFT window, low and left, far from
+  // every delegate head (nearest head is ~160 px away). No halo impression.
+  circle(200, 262, 40, C('#f5a623'), 0.25);
+  circle(200, 262, 30, C('#e07b28'));
+  circle(196, 258, 8, C('#f5c542'), 0.8);
+  for (let i = 0; i < 8; i++) {
+    const a = (i * Math.PI) / 4;
+    line(
+      200 + Math.cos(a) * 36, 262 + Math.sin(a) * 36,
+      200 + Math.cos(a) * 44, 262 + Math.sin(a) * 44,
+      3, C('#e07b28'),
+    );
+  }
+  // Mullion over the sun (sun stays whole: mullion is a thin bar across it).
+  line(200, 193, 200, 385, 4, C('#6b4f2e'));
+
+  // Wall clock, hands at 11:58 — nearly midnight.
+  circle(356, 240, 26, C('#fdfcf8'));
+  circle(356, 240, 26, INK, 0.0);
+  polyOutline(
+    [
+      [356 + 24, 240], [356 + 17, 240 + 17], [356, 240 + 24], [356 - 17, 240 + 17],
+      [356 - 24, 240], [356 - 17, 240 - 17], [356, 240 - 24], [356 + 17, 240 - 17],
+    ],
+    2, INK,
+  );
+  for (let i = 0; i < 12; i++) {
+    const a = (i * Math.PI) / 6;
+    line(
+      356 + Math.cos(a) * 21, 240 + Math.sin(a) * 21,
+      356 + Math.cos(a) * 24, 240 + Math.sin(a) * 24,
+      2, INK,
+    );
+  }
+  // Hour hand ~11:58 (just left of 12), minute hand at 58 min.
+  line(356, 240, 356 - 3, 240 - 13, 3, INK);
+  line(356, 240, 356 - 5, 240 - 20, 2, INK);
+  circle(356, 240, 3, INK);
+
+  // OVERTIME badge — full label, clear of windows and bunting.
+  rrect(598, 222, 140, 32, 6, RED);
+  drawText('OVERTIME', 668, 230, 2, C('#ffffff'), { bold: true, align: 'center' });
+
+  // Five delegates behind the round table.
+  delegate(250, 388, C('#8a5a3b'), C('#141414'), C('#1f2a44'), RED, 'textured');
+  delegate(380, 388, C('#e8b98d'), C('#3a2a1a'), C('#333333'), GOLD, 'glasses');
+  delegate(512, 388, C('#f0c8a0'), C('#241a12'), C('#14524a'), C('#c9a227'), 'bun');
+  delegate(644, 388, C('#c98d5f'), C('#1a1a1a'), C('#5d2430'), C('#e8e0cc'), 'beard');
+  delegate(774, 388, C('#d9a06f'), C('#b8b0a4'), C('#243d24'), BLUE, 'grey');
+
+  // Round table.
+  ellipse(512, 458, 340, 46, C('#6e4a2c'));
+  ellipse(512, 452, 340, 46, C('#8a5f3a'));
+  line(172, 452, 852, 452, 2, C('#5d3d22'));
+  // Papers + microphones on the table.
+  fillRect(300, 440, 62, 16, C('#fdfcf8'));
+  fillRect(700, 440, 62, 16, C('#fdfcf8'));
+  line(360, 440, 360, 416, 3, INK);
+  circle(360, 412, 6, INK);
+  line(664, 440, 664, 416, 3, INK);
+  circle(664, 412, 6, INK);
+
+  // DRAFT document on the table: "FOSSIL FUELS" struck by ONE clean red line.
+  fillRect(430, 442, 172, 44, C('#fdfcf8'));
+  polyOutline([[430, 442], [602, 442], [602, 486], [430, 486]], 2, INK);
+  drawText('DRAFT', 440, 446, 2, INK, { bold: true });
+  drawText('FOSSIL FUELS', 440, 464, 2, INK, { bold: true });
+  line(438, 471, 588, 471, 3, RED);
+
+  // Globe on the side table, right.
+  fillRect(905, 450, 100, 10, C('#6e4a2c'));
+  fillRect(950, 460, 8, 24, C('#6e4a2c'));
+  circle(955, 421, 28, C('#4a7fb5'));
+  poly([[946, 408], [958, 402], [966, 412], [958, 420], [948, 418]], C('#3f7a3a'));
+  poly([[944, 432], [956, 426], [968, 434], [962, 442], [950, 440]], C('#3f7a3a'));
+  line(932, 421, 978, 421, 2, C('#2e5d8a'));
+  line(955, 393, 955, 449, 2, C('#2e5d8a'));
+  ellipse(955, 450, 16, 5, C('#8a6f4d'));
+}
+
+// ---------------------------------------------------------------- thumbnails
+function drawPoland(): void {
+  const x0 = 8;
+  const x1 = 338;
+  fillRect(x0, 656, 330, 60, C('#cfe0ea'));
+  circle(306, 672, 10, C('#f5e6a8'));
+  ellipse(60, 672, 24, 8, C('#f4f8fa'), 0.9);
+  ellipse(150, 682, 28, 8, C('#f4f8fa'), 0.9);
+  // Field.
+  fillRect(x0, 716, 330, 56, C('#5d8a3c'));
+  line(x0, 728, x1, 728, 2, C('#4a7030'));
+  line(x0, 742, x1, 742, 2, C('#4a7030'));
+  line(x0, 756, x1, 756, 2, C('#4a7030'));
+  // House, left.
+  fillRect(30, 692, 44, 24, C('#f5f0e0'));
+  poly([[26, 692], [78, 692], [52, 676]], C('#8a4a2a'));
+  fillRect(48, 704, 10, 12, C('#6b4a2f'));
+  fillRect(36, 698, 8, 8, C('#7fb2d9'));
+  // Pines.
+  const pine = (tx: number): void => {
+    fillRect(tx - 2, 706, 4, 10, C('#5d3d22'));
+    poly([[tx - 10, 708], [tx + 10, 708], [tx, 690]], C('#2e5d2a'));
+    poly([[tx - 8, 696], [tx + 8, 696], [tx, 682]], C('#356b31'));
+  };
+  pine(98);
+  pine(126);
+  pine(312);
+  // Polish flag on a pole.
+  line(285, 716, 285, 672, 3, INK);
+  fillRect(285, 672, 26, 9, C('#ffffff'));
+  fillRect(285, 681, 26, 9, C('#dc143c'));
+  // Crater.
+  ellipse(190, 748, 36, 11, C('#3a2a1c'));
+  ellipse(190, 748, 26, 7, C('#241a10'));
+  ellipse(190, 744, 30, 6, C('#5d4630'), 0.6);
+
+  // (c) Real missile, nose-down into the crater — pointed nose, cylindrical
+  // body, swept wings, tail fins. Never a straight grey pipe.
+  // Tip T in the crater, tail up-right. d = tip->tail unit, p = perpendicular.
+  const T: [number, number] = [190, 754];
+  const d: [number, number] = [0.55, -0.835];
+  const p: [number, number] = [0.835, 0.55];
+  const at = (s: number, q: number): [number, number] => [T[0] + d[0] * s + p[0] * q, T[1] + d[1] * s + p[1] * q];
+  // Outline pass (dark, slightly larger), then body.
+  const body: [number, number][] = [at(26, 6), at(76, 6), at(76, -6), at(26, -6)];
+  const nose: [number, number][] = [T, at(26, 6), at(26, -6)];
+  const bodyBig: [number, number][] = [at(24, 8), at(78, 8), at(78, -8), at(24, -8)];
+  poly([T, at(24, 8), at(24, -8)], C('#333a40'));
+  poly(bodyBig, C('#333a40'));
+  poly(nose, C('#c3ccd4'));
+  poly(body, C('#c3ccd4'));
+  // Red band near the nose + dark nose tip.
+  poly([at(30, 6), at(36, 6), at(36, -6), at(30, -6)], RED);
+  poly([[T[0], T[1]], at(10, 3), at(10, -3)], C('#5d6a75'));
+  // Swept wings, mid-body, sweeping back toward the tail.
+  const M = 46;
+  poly([at(M, 5), at(M - 14, 5), at(M - 18, 20), at(M - 2, 20)], C('#9aa7b1'));
+  poly([at(M, -5), at(M - 14, -5), at(M - 18, -20), at(M - 2, -20)], C('#9aa7b1'));
+  polyOutline([at(M, 5), at(M - 14, 5), at(M - 18, 20), at(M - 2, 20)], 1, C('#333a40'));
+  polyOutline([at(M, -5), at(M - 14, -5), at(M - 18, -20), at(M - 2, -20)], 1, C('#333a40'));
+  // Tail fins at the tail end.
+  poly([at(72, 6), at(64, 6), at(60, 15), at(68, 15)], C('#8b98a3'));
+  poly([at(72, -6), at(64, -6), at(60, -15), at(68, -15)], C('#8b98a3'));
+  polyOutline([at(72, 6), at(64, 6), at(60, 15), at(68, 15)], 1, C('#333a40'));
+  polyOutline([at(72, -6), at(64, -6), at(60, -15), at(68, -15)], 1, C('#333a40'));
+  // Tail nozzle.
+  poly([at(76, 5), at(80, 5), at(80, -5), at(76, -5)], C('#5d6a75'));
+
+  // Ragged smoke: sparse, loose puffs drifting right from the crater.
+  const smoke = C('#9aa0a3');
+  circle(222, 722, 9, smoke, 0.8);
+  circle(246, 708, 12, smoke, 0.8);
+  circle(272, 700, 8, smoke, 0.8);
+  circle(296, 708, 10, smoke, 0.8);
+  circle(318, 718, 7, smoke, 0.8);
+  // Debris.
+  circle(160, 740, 2, INK);
+  circle(226, 742, 2, INK);
+  circle(150, 752, 2, INK);
+}
+
+function drawKyiv(): void {
+  const x0 = 346;
+  fillRect(x0, 656, 330, 74, C('#eec27f'));
+  fillRect(x0, 656, 330, 18, C('#f4d49a'));
+  // Far bank + river.
+  fillRect(x0, 722, 330, 10, C('#6b5a44'));
+  fillRect(x0, 732, 330, 40, C('#5b7fa6'));
+  line(x0 + 10, 744, x0 + 120, 744, 2, C('#7fa3c8'));
+  line(x0 + 200, 756, x0 + 320, 756, 2, C('#7fa3c8'));
+  line(x0 + 60, 764, x0 + 180, 764, 2, C('#7fa3c8'));
+  // Golden-domed church on the far bank, right.
+  fillRect(622, 726, 36, 8, C('#d8c9a8'));
+  circle(640, 714, 15, GOLD);
+  circle(636, 710, 5, C('#f0d060'), 0.9);
+  line(640, 700, 640, 692, 3, GOLD);
+  line(634, 696, 646, 696, 3, GOLD);
+  // Bridge deck with a V break in the middle.
+  line(352, 738, 492, 738, 5, C('#4a3f35'));
+  line(492, 738, 508, 754, 5, C('#4a3f35'));
+  line(540, 752, 556, 738, 5, C('#4a3f35'));
+  line(556, 738, 670, 738, 5, C('#4a3f35'));
+  // Leaning pylon + cables.
+  line(470, 738, 448, 686, 7, C('#3f3630'));
+  line(440, 692, 458, 692, 4, C('#3f3630'));
+  line(448, 688, 400, 738, 1, C('#3f3630'));
+  line(448, 688, 500, 738, 1, C('#3f3630'));
+  // Small fire on the left deck.
+  flame(400, 736, 0.7);
+  // (a) ANCHORED second puff: a flame burns at the break point and a smoke
+  // column rises from it straight into the puff — the puff has a visible
+  // source of fire below it, it does not float free.
+  flame(522, 752, 1.0);
+  circle(522, 740, 6, C('#8f9599'), 0.85);
+  circle(524, 730, 8, C('#8f9599'), 0.85);
+  circle(520, 718, 10, C('#8f9599'), 0.85);
+  circle(524, 706, 11, C('#8f9599'), 0.85);
+  smokePuff(526, 692, 1.0, C('#8f9599'), 0.85);
+  // First puff, rising from the left-deck fire.
+  circle(398, 726, 7, C('#8f9599'), 0.85);
+  circle(396, 714, 9, C('#8f9599'), 0.85);
+  circle(398, 702, 10, C('#8f9599'), 0.85);
+  smokePuff(400, 688, 0.9, C('#8f9599'), 0.85);
+}
+
+function drawMarkets(): void {
+  const x0 = 684;
+  fillRect(x0, 656, 330, 116, C('#fdfcf8'));
+  polyOutline([[x0, 656], [1014, 656], [1014, 772], [x0, 772]], 2, INK);
+  // Grid.
+  for (let gx = x0 + 33; gx < 1014; gx += 33) line(gx, 656, gx, 772, 1, C('#e0ddd2'));
+  for (const gy of [680, 704, 728, 752]) line(x0, gy, 1014, gy, 1, C('#e0ddd2'));
+  // Falling chart line, red.
+  const pts: [number, number][] = [
+    [694, 672], [748, 688], [800, 698], [852, 722], [904, 738], [956, 756], [1004, 766],
   ];
-  for (const s of strands) thickLine(cx + s[0] * r, cy + s[1] * r, cx + s[2] * r, cy + s[3] * r, 1.8, light);
-  thickLine(cx - r * 0.05, cy - r * 0.9, cx + r * 0.05, cy - r * 0.3, 1.6, col);
-  thickLine(cx + r * 0.42, cy - r * 0.78, cx + r * 0.55, cy - r * 0.2, 1.6, [30, 24, 20]);
+  for (let i = 0; i + 1 < pts.length; i++) line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], 4, RED);
+  for (const p of pts) circle(p[0], p[1], 4, RED);
+  // Labels kept FAR from the line: S&P bottom-left (line is high there),
+  // NASDAQ top-right (line is low there).
+  drawText('S&P -3.7%', 692, 754, 2, RED, { bold: true });
+  drawText('NASDAQ -5.3%', 860, 662, 2, RED, { bold: true });
 }
-function face(cx: number, cy: number, r: number, skin: RGB, opts: { glasses?: boolean; beard?: boolean } = {}): void {
-  fillCircle(cx, cy, r, skin);
-  fillCircle(cx - r * 0.36, cy - r * 0.08, r * 0.13, [255, 255, 255]);
-  fillCircle(cx + r * 0.36, cy - r * 0.08, r * 0.13, [255, 255, 255]);
-  fillCircle(cx - r * 0.36, cy - r * 0.08, r * 0.06, INK);
-  fillCircle(cx + r * 0.36, cy - r * 0.08, r * 0.06, INK);
-  thickLine(cx - r * 0.55, cy - r * 0.32, cx - r * 0.18, cy - r * 0.36, 1.8, [60, 45, 35]);
-  thickLine(cx + r * 0.18, cy - r * 0.36, cx + r * 0.55, cy - r * 0.32, 1.8, [60, 45, 35]);
-  thickLine(cx, cy + r * 0.02, cx - r * 0.06, cy + r * 0.34, 1.8, [150, 105, 80]);
-  thickLine(cx - r * 0.26, cy + r * 0.55, cx + r * 0.26, cy + r * 0.55, 2, [120, 60, 50]);
-  if (opts.beard) {
-    fillEllipse(cx, cy + r * 0.62, r * 0.72, r * 0.42, [90, 80, 75]);
-    thickLine(cx - r * 0.26, cy + r * 0.55, cx + r * 0.26, cy + r * 0.55, 2, [60, 45, 40]);
+
+// ---------------------------------------------------------------- page
+function main(): void {
+  // Masthead.
+  fillRect(16, 10, 992, 2, INK);
+  fillRect(16, 15, 992, 1, INK);
+  drawText('THE WORLD', 512, 26, 11, INK, { align: 'center' });
+  drawText('SATURDAY, 21 NOVEMBER 2026 — IN ONE IMAGE', 512, 112, 3, INK, { bold: true, align: 'center' });
+  fillRect(16, 140, 992, 2, INK);
+
+  // Lead illustration + headline + body.
+  drawLead();
+  drawText('COP31 TALKS RUN INTO OVERTIME', 512, 510, 5, INK, { bold: true, align: 'center' });
+  drawText('DRAFT DROPS FOSSIL-FUEL WORDING', 512, 546, 5, INK, { bold: true, align: 'center' });
+  drawText('FRIDAY DEADLINE MISSED IN ANTALYA;', 512, 588, 3, INK, { bold: true, align: 'center' });
+  drawText('~200 NATIONS AWAIT A NEW DRAFT ON SATURDAY', 512, 610, 3, INK, { bold: true, align: 'center' });
+  drawText('$120BN-A-YEAR ADAPTATION TARGET ALSO CUT', 512, 632, 3, INK, { bold: true, align: 'center' });
+
+  // Secondary row.
+  fillRect(16, 654, 992, 2, INK);
+  drawPoland();
+  drawKyiv();
+  drawMarkets();
+  const cols = [173, 511, 849];
+  const heads: [string, string][] = [
+    ['MISSILE FALLS', 'IN POLAND'],
+    ['KYIV HIT BY', '84 MISSILES'],
+    ['AI SELL-OFF HITS', 'WALL STREET'],
+  ];
+  const facts: [string, string][] = [
+    ['Kh-101 down in Nowy Lipowiec', 'NATO: grave violation; no dead'],
+    ['404 drones; 3 bridges hit', 'Power, heat, water cut off'],
+    ['S&P -3.7%, into correction', 'Nasdaq -5.3% • NVIDIA -14%'],
+  ];
+  for (let i = 0; i < 3; i++) {
+    drawText(heads[i][0], cols[i], 780, 3, INK, { bold: true, align: 'center' });
+    drawText(heads[i][1], cols[i], 802, 3, INK, { bold: true, align: 'center' });
+    drawText(facts[i][0], cols[i], 826, 2, INK, { bold: true, align: 'center', tracking: -1 });
+    drawText(facts[i][1], cols[i], 843, 2, INK, { bold: true, align: 'center', tracking: -1 });
   }
-  if (opts.glasses) {
-    circleOutline(cx - r * 0.36, cy - r * 0.08, r * 0.24, 1.6, INK);
-    circleOutline(cx + r * 0.36, cy - r * 0.08, r * 0.24, 1.6, INK);
-    thickLine(cx - r * 0.12, cy - r * 0.08, cx + r * 0.12, cy - r * 0.08, 1.6, INK);
+
+  // Footer IN BRIEF — roomy 2x2 grid.
+  fillRect(16, 868, 992, 2, INK);
+  fillRect(16, 878, 12, 12, RED);
+  drawText('IN BRIEF', 36, 876, 3, INK, { bold: true });
+  const briefs = [
+    'Cyclone Akvan: 370,000 flee Odisha; no deaths',
+    'World Court acts after Myanmar ruling',
+    'France seeks UN Security Council session on Kyiv',
+    'Estonia to shut Russia border from 1 Dec',
+  ];
+  const bx = [16, 524];
+  const by = [906, 952];
+  for (let i = 0; i < 4; i++) {
+    const x = bx[i % 2];
+    const y = by[Math.floor(i / 2)];
+    const lines = wrapText(briefs[i], 470, 2, -1);
+    circle(x + 5, y + 7, 4, RED);
+    for (let l = 0; l < lines.length; l++) {
+      drawText(lines[l], x + 16, y + l * 17, 2, INK, { bold: true, tracking: -1 });
+    }
   }
-}
-function delegate(x: number, suit: RGB, skin: RGB, hair: 'parted' | 'grey' | 'bald' | 'bob' | 'curly', opts: { glasses?: boolean; beard?: boolean } = {}): void {
-  const hy = 402; const r = 24;
-  fillPoly([[x - 46, 560], [x - 38, 448], [x + 38, 448], [x + 46, 560]], suit);
-  fillPoly([[x - 12, 448], [x, 470], [x + 12, 448], [x + 8, 446], [x, 452], [x - 8, 446]], [250, 250, 248]);
-  fillPoly([[x - 5, 452], [x, 458], [x + 5, 452], [x + 7, 478], [x, 512], [x - 7, 478]], RED);
-  fillRect(x - 9, hy + 14, 18, 16, skin);
-  fillCircle(x - r - 1, hy + 2, 5, skin); fillCircle(x + r + 1, hy + 2, 5, skin);
-  face(x, hy, r, skin, opts);
-  if (hair === 'parted') hairParted(x, hy, r + 2, [52, 38, 28], [122, 96, 66]);
-  else if (hair === 'grey') {
-    fillPoly([[x - r - 1, hy - 2], [x - r, hy - r - 2], [x + r, hy - r - 2], [x + r + 1, hy - 2], [x + r * 0.6, hy - r * 0.42], [x - r * 0.6, hy - r * 0.42]], [168, 164, 158]);
-    thickLine(x - r * 0.3, hy - r * 0.9, x - r * 0.2, hy - r * 0.4, 1.6, [210, 206, 198]);
-    thickLine(x + r * 0.2, hy - r * 0.9, x + r * 0.3, hy - r * 0.4, 1.6, [210, 206, 198]);
-  } else if (hair === 'bald') {
-    fillPoly([[x - r, hy - 2], [x - r - 1, hy - r * 0.5], [x - r * 0.7, hy - r * 0.7], [x - r * 0.4, hy - r * 0.3]], [200, 196, 190]);
-    fillPoly([[x + r, hy - 2], [x + r + 1, hy - r * 0.5], [x + r * 0.7, hy - r * 0.7], [x + r * 0.4, hy - r * 0.3]], [200, 196, 190]);
-  } else if (hair === 'bob') {
-    fillPoly([[x - r - 6, hy + 26], [x - r - 4, hy - r], [x + r + 4, hy - r], [x + r + 6, hy + 26], [x + r, hy + 22], [x + r, hy - r * 0.3], [x - r, hy - r * 0.3], [x - r, hy + 22]], [40, 30, 24]);
-    fillCircle(x, hy - r * 0.2, r + 1, [40, 30, 24]);
-    face(x, hy + 2, r, skin, opts);
-    thickLine(x - r * 0.4, hy - r * 0.8, x - r * 0.3, hy - r * 0.2, 1.6, [110, 88, 62]);
-  } else {
-    for (let i = -3; i <= 3; i++) fillCircle(x + i * r * 0.28, hy - r * 0.82 + Math.abs(i) * r * 0.1, r * 0.26, [28, 22, 18]);
-    fillEllipse(x, hy - r * 0.55, r * 0.95, r * 0.5, [28, 22, 18]);
-  }
+  fillRect(16, 1006, 992, 2, INK);
+  fillRect(16, 1011, 992, 1, INK);
+
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, 'entry.png'), encodePNG(W, H, px));
+  writeFileSync(
+    join(outDir, 'dossier.json'),
+    JSON.stringify(
+      {
+        title: 'THE WORLD — IN ONE IMAGE — SATURDAY, 21 NOVEMBER 2026',
+        competition: 'news-image-20261121',
+        version: 10,
+        size: [1024, 1024],
+        facts: [
+          'COP31 Antalya overtime Sat 21 Nov; Friday deadline missed; draft drops fossil-fuel mention + $120bn/yr adaptation; ~200 nations; new draft due Saturday',
+          'Russian Kh-101 fell in Nowy Lipowiec, Poland; NATO grave violation; no casualties',
+          'Kyiv: 84 cruise missiles + 404 drones; 3 Dnipro bridges damaged; power, heat, water cut',
+          'US AI sell-off: S&P -3.7% into correction; Nasdaq -5.3%; NVIDIA -14%',
+          'IN BRIEF: Cyclone Akvan 370,000 flee Odisha, no deaths; World Court acts after Myanmar ruling; France seeks UN Security Council session on Kyiv; Estonia to shut Russia border from 1 Dec',
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 }
 
-// ---------- LAYOUT ----------
-fillRect(0, 0, W, 10, NAVY); fillRect(0, H - 10, W, 10, NAVY);
-fillRect(0, 0, 10, H, NAVY); fillRect(W - 10, 0, 10, H, NAVY);
-fillRect(24, 24, W - 48, 2, NAVY);
-
-// MASTHEAD
-drawText('THE WORLD', 512, 36, 66, NAVY, 'c', 6, 0.17);
-drawText('IN ONE IMAGE', 512, 106, 19, RED, 'c', 8, 0.2);
-fillRect(180, 114, 130, 2, NAVY); fillRect(714, 114, 130, 2, NAVY);
-// DATELINE
-fillRect(30, 138, 964, 2, NAVY);
-drawText('SATURDAY, 21 NOVEMBER 2026', 512, 146, 21, INK, 'c', 3, 0.2);
-fillRect(30, 172, 964, 2, NAVY);
-
-// HEADLINE BAND
-fillRect(30, 180, 964, 76, NAVY);
-drawText('COP31 IN OVERTIME AS DRAFT', 512, 187, 30, CREAM, 'c', 1, 0.17);
-drawText('DROPS FOSSIL-FUEL PLEDGE', 512, 222, 30, [255, 214, 130], 'c', 1, 0.17);
-// SUBHEAD
-drawText('DEADLINE MISSED IN ANTALYA - NEW DRAFT DUE SATURDAY', 512, 264, 15, RED, 'c', 0.5, 0.22);
-drawText('$120BN A YEAR FOR ADAPTATION - NEARLY 200 NATIONS AT THE TABLE', 512, 284, 15, INK, 'c', 0.5, 0.22);
-
-// ---------- MAIN SCENE: COP31 HALL (Y 306..566) ----------
-fillRect(30, 306, 964, 260, [232, 214, 178]);
-fillRect(30, 540, 964, 26, [176, 132, 88]);
-function archedWindow(cx: number, top: number, w: number, h: number, mid: boolean): void {
-  const r = w / 2; const springY = top + r;
-  fillPoly([[cx - r, springY], [cx - r, top + h], [cx + r, top + h], [cx + r, springY]], [240, 178, 110]);
-  fillCircle(cx, springY, r, [240, 178, 110]);
-  fillRect(cx - r, springY + 40, w, 60, [226, 140, 82]);
-  fillRect(cx - r, springY + 100, w, 60, [214, 112, 66]);
-  if (mid) {
-    // DISTANT SKYLINE IS SKIPPED FOR THE MIDDLE WINDOW
-  } else {
-    fillRect(cx - r + 8, springY + 96, 22, 64, [120, 70, 55]);
-    fillRect(cx - r + 36, springY + 76, 18, 84, [140, 84, 62]);
-    fillRect(cx + r - 34, springY + 88, 26, 72, [120, 70, 55]);
-  }
-  thickLine(cx - r, springY, cx - r, top + h, 6, [90, 58, 36]);
-  thickLine(cx + r, springY, cx + r, top + h, 6, [90, 58, 36]);
-  thickLine(cx - r, top + h, cx + r, top + h, 6, [90, 58, 36]);
-  circleOutline(cx, springY, r, 6, [90, 58, 36]);
-  thickLine(cx, top + 2, cx, top + h, 5, [90, 58, 36]);
-  thickLine(cx - r, springY + 70, cx + r, springY + 70, 5, [90, 58, 36]);
-  if (mid) {
-    // WHOLE SUN, HIGH IN THE ARCH, CLEAR OF THE DELEGATES, DRAWN LAST
-    // SO NO MULLION CUTS THROUGH IT
-    fillCircle(cx, springY - 42, 30, [255, 205, 110]);
-    fillCircle(cx, springY - 42, 21, [255, 222, 138]);
-  }
-}
-archedWindow(196, 322, 150, 168, false);
-archedWindow(512, 322, 150, 168, true);
-archedWindow(828, 322, 150, 168, false);
-// BUNTING: 16 FLAGS
-const flagCols: RGB[] = [[178, 34, 34], [240, 196, 25], [46, 134, 193], [39, 174, 96], [230, 126, 34], [142, 68, 173], [22, 160, 133], [203, 67, 53]];
-for (let i = 0; i < 16; i++) {
-  const fx = 60 + i * 58;
-  const fy = 312 + Math.sin((i / 15) * Math.PI) * 10;
-  fillPoly([[fx, fy], [fx + 34, fy], [fx + 17, fy + 22]], flagCols[i % 8]);
-  if (i < 15) thinLine(fx + 34, fy, 60 + (i + 1) * 58, 312 + Math.sin(((i + 1) / 15) * Math.PI) * 10, [90, 58, 36]);
-}
-// WALL CLOCK, NEAR MIDNIGHT (11:58)
-fillCircle(352, 330, 25, [252, 248, 238]);
-circleOutline(352, 330, 25, 3, INK);
-for (let i = 0; i < 12; i++) {
-  const a = (i / 12) * Math.PI * 2;
-  fillCircle(352 + Math.sin(a) * 20, 330 - Math.cos(a) * 20, 1.6, INK);
-}
-thickLine(352, 330, 352 - 3, 330 - 13, 3, INK);
-thickLine(352, 330, 352 - 5, 330 - 19, 2.4, INK);
-fillCircle(352, 330, 2.6, RED);
-// OVERTIME BADGE, TOP RIGHT, WHOLE
-roundRect(838, 306, 156, 30, 6, RED);
-drawText('OVERTIME', 916, 312, 19, [255, 255, 255], 'c', 1, 0.22);
-// SIDE TABLE + GLOBE, RIGHT
-fillRect(852, 500, 118, 8, [122, 82, 46]);
-fillRect(860, 508, 8, 52, [96, 62, 34]); fillRect(954, 508, 8, 52, [96, 62, 34]);
-fillCircle(911, 468, 27, [46, 134, 193]);
-fillEllipse(902, 462, 12, 7, [39, 174, 96]); fillEllipse(918, 478, 9, 6, [39, 174, 96]); fillEllipse(912, 452, 6, 4, [39, 174, 96]);
-circleOutline(911, 468, 27, 2.5, NAVY);
-thickLine(911, 495, 911, 500, 3, NAVY);
-fillRect(894, 492, 34, 5, NAVY);
-// DELEGATES (5, DETAILED FACES)
-delegate(330, [38, 58, 92], [222, 178, 142], 'parted');
-delegate(420, [92, 38, 44], [198, 152, 118], 'grey', { glasses: true });
-delegate(512, [30, 70, 52], [232, 190, 152], 'bald', { beard: true });
-delegate(604, [70, 44, 84], [240, 200, 168], 'bob');
-delegate(694, [52, 52, 58], [210, 166, 130], 'curly');
-// ROUND TABLE
-fillEllipse(512, 512, 268, 40, [122, 82, 46]);
-fillRect(244, 512, 536, 44, [96, 62, 34]);
-fillEllipse(512, 556, 268, 14, [80, 50, 26]);
-// MICROPHONES + GLASSES ON THE TABLE
-for (const mx of [300, 400, 624, 724]) {
-  thickLine(mx, 512, mx, 492, 2.4, INK); fillCircle(mx, 488, 5, INK);
-}
-fillRect(452, 500, 10, 12, [200, 220, 230]); fillRect(566, 500, 10, 12, [200, 220, 230]);
-// DRAFT DOCUMENT, DRAWN AFTER THE TABLE SO IT SITS ON TOP OF IT,
-// FOSSIL FUELS CROSSED WITH ONE CLEAN LINE
-fillPoly([[468, 482], [548, 476], [556, 516], [476, 522]], [255, 255, 255]);
-drawText('DRAFT', 512, 480, 9, RED, 'c', 1, 0.22);
-drawText('FOSSIL FUELS', 512, 494, 10.5, INK, 'c', 0.5, 0.22);
-thickLine(474, 502, 550, 497, 3, RED);
-fillRect(478, 508, 66, 2, [160, 160, 160]); fillRect(478, 513, 52, 2, [160, 160, 160]);
-// CAPTION UNDER THE SCENE
-drawText('ANTALYA, TURKIYE - DELEGATES WAIT FOR A NEW DRAFT AS THE CLOCK NEARS MIDNIGHT', 512, 568, 12, [90, 80, 66], 'c', 0.5, 0.2);
-
-// ---------- SECONDARY ROW (Y 592..800) ----------
-fillRect(30, 588, 964, 2, NAVY);
-function thumbFrame(x: number, y: number, w: number, h: number): void {
-  fillRect(x - 2, y - 2, w + 4, h + 4, NAVY);
-}
-// --- THUMB 1: POLAND ---
-thumbFrame(30, 596, 310, 112);
-fillRect(30, 596, 310, 112, [214, 226, 238]);
-fillRect(30, 664, 310, 44, [96, 148, 74]);
-fillRect(30, 690, 310, 18, [74, 120, 58]);
-fillPoly([[52, 664], [52, 640], [88, 640], [88, 664]], [250, 248, 240]);
-fillPoly([[46, 642], [70, 622], [94, 642]], RED);
-fillRect(64, 650, 8, 14, NAVY);
-for (const px0 of [110, 128, 146]) {
-  fillPoly([[px0, 664], [px0 + 9, 630], [px0 + 18, 664]], [34, 96, 52]);
-  fillRect(px0 + 7, 664, 4, 6, [90, 58, 36]);
-}
-thickLine(300, 664, 300, 612, 3, INK);
-fillRect(300, 612, 30, 9, [255, 255, 255]); fillRect(300, 621, 30, 9, RED);
-fillEllipse(232, 690, 42, 12, [88, 66, 44]);
-fillEllipse(232, 688, 30, 8, [60, 44, 30]);
-thickLine(214, 700, 252, 648, 9, [150, 152, 155]);
-fillPoly([[252, 648], [262, 640], [258, 654]], [120, 122, 125]);
-fillPoly([[226, 678], [214, 668], [222, 684]], [120, 122, 125]);
-// POLAND SMOKE — RISING, SPREADING, FEATHERY (FIX B)
-polandSmoke(238, 668, 0.62);
-// --- THUMB 2: KYIV ---
-thumbFrame(357, 596, 310, 112);
-fillRect(357, 596, 310, 112, [226, 178, 128]);
-fillRect(357, 676, 310, 32, [70, 110, 150]);
-fillRect(357, 640, 60, 36, [96, 88, 96]); fillRect(417, 628, 52, 48, [110, 100, 108]);
-fillRect(600, 648, 44, 28, [250, 248, 240]);
-fillCircle(622, 640, 14, [212, 164, 52]);
-fillPoly([[622, 622], [626, 630], [622, 634], [618, 630]], [212, 164, 52]);
-thickLine(622, 620, 622, 610, 2, [212, 164, 52]); thickLine(616, 614, 628, 614, 2, [212, 164, 52]);
-thickLine(370, 668, 540, 668, 5, [60, 60, 66]);
-thickLine(400, 668, 420, 690, 4, [60, 60, 66]); thickLine(440, 668, 420, 690, 4, [60, 60, 66]);
-thickLine(470, 668, 480, 640, 5, [60, 60, 66]);
-thickLine(480, 640, 500, 668, 2.5, [60, 60, 66]);
-thickLine(500, 668, 520, 690, 4, [60, 60, 66]); thickLine(540, 668, 520, 690, 4, [60, 60, 66]);
-fillEllipse(420, 672, 16, 6, [230, 120, 40]); fillEllipse(420, 670, 9, 4, [250, 190, 60]);
-// KYIV SMOKE — ORGANIC, NO BUBBLE HIGHLIGHTS (FIX A)
-kyivSmoke(470, 632, 0.55);
-kyivSmoke(580, 640, 0.42);
-// --- THUMB 3: MARKETS ---
-thumbFrame(684, 596, 310, 112);
-fillRect(684, 596, 310, 112, [255, 255, 255]);
-fillRect(700, 610, 278, 2, [200, 200, 200]); fillRect(700, 610, 2, 84, [200, 200, 200]);
-const chart: [number, number][] = [[800, 622], [830, 634], [856, 628], [884, 652], [912, 646], [940, 672], [966, 690]];
-for (let i = 0; i + 1 < chart.length; i++) thickLine(chart[i][0], chart[i][1], chart[i + 1][0], chart[i + 1][1], 4, RED);
-for (const p of chart) fillCircle(p[0], p[1], 3.5, RED);
-drawText('S&P -3.7%', 700, 604, 15, RED, 'l', 0.5, 0.22);
-drawText('NASDAQ -5.3%', 852, 604, 13, INK, 'l', 0.5, 0.22);
-// COLUMN TEXT
-function column(x: number, kicker: string, head: string, b1: string, b2: string): void {
-  drawText(kicker, x, 716, 12, RED, 'l', 2, 0.22);
-  const hl = wrap(head, 310, 18, 0.5);
-  hl.forEach((ln, i) => drawText(ln, x, 734 + i * 21, 18, NAVY, 'l', 0.5, 0.2));
-  const by = 734 + hl.length * 21 + 4;
-  const l1 = wrap(b1, 310, 13, 0.3);
-  l1.forEach((ln, i) => drawText(ln, x, by + i * 16, 13, INK, 'l', 0.3, 0.22));
-  const by2 = by + l1.length * 16 + 2;
-  const l2 = wrap(b2, 310, 13, 0.3);
-  l2.forEach((ln, i) => drawText(ln, x, by2 + i * 16, 13, INK, 'l', 0.3, 0.22));
-}
-column(30, 'POLAND', 'RUSSIAN KH-101 FALLS IN POLAND', 'NATO CALLS IT A GRAVE VIOLATION', 'NO CASUALTIES REPORTED');
-column(357, 'KYIV', 'KYIV HIT BY 84 MISSILES', '404 DRONES, 3 DNIPRO BRIDGES HIT', 'POWER, HEAT, WATER CUT');
-column(684, 'MARKETS', 'AI SELL-OFF DRAGS US STOCKS DOWN', 'S&P -3.7% IN CORRECTION', 'NASDAQ -5.3% - NVDA -14%');
-
-// ---------- FOOTER: IN BRIEF ----------
-fillRect(30, 834, 964, 2, NAVY);
-drawText('IN BRIEF', 512, 844, 20, NAVY, 'c', 6, 0.2);
-fillRect(30, 870, 964, 1, [150, 140, 120]);
-function brief(x: number, title: string, body: string): void {
-  drawText(title, x, 882, 15, RED, 'l', 1, 0.22);
-  const ls = wrap(body, 226, 13, 0.3);
-  ls.forEach((ln, i) => drawText(ln, x, 904 + i * 17, 13, INK, 'l', 0.3, 0.22));
-}
-brief(30, 'CYCLONE AKVAN', '370,000 EVACUATED IN ODISHA. NO DEATHS.');
-brief(271, 'WORLD COURT', 'ACTION FOLLOWS MYANMAR RULING.');
-brief(512, 'FRANCE', 'SEEKS UN SECURITY COUNCIL MEETING ON KYIV.');
-brief(753, 'ESTONIA', 'TO CLOSE RUSSIAN BORDER FROM 1 DEC.');
-fillRect(30, 968, 964, 2, NAVY);
-drawText('THE WORLD - IN ONE IMAGE - 21 NOVEMBER 2026', 512, 978, 12, [90, 80, 66], 'c', 1, 0.2);
-
-// ---------- PNG ENCODE (DETERMINISTIC) ----------
-function crc32(buf: Buffer): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c ^= buf[i];
-    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-function chunk(type: string, data: Buffer): Buffer {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0); out.write(type, 4, 'ascii');
-  data.copy(out, 8);
-  const crc = crc32(Buffer.concat([Buffer.from(type, 'ascii'), data]));
-  out.writeUInt32BE(crc, 8 + data.length);
-  return out;
-}
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-const raw = Buffer.alloc(H * (1 + W * 3));
-for (let y = 0; y < H; y++) {
-  raw[y * (1 + W * 3)] = 0;
-  raw.set(fb.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
-}
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, 'entry.png'), png);
+main();
